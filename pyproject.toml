@@ -1,0 +1,42 @@
+[project]
+name = "bugbounty"
+version = "0.0.1"
+description = "Validator-first AI bug-bounty vulnerability-discovery harness (authorized targets only)"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "pydantic>=2.6",
+    "pyyaml>=6.0",
+    "typer>=0.12",
+    "rich>=13.7",
+]
+
+[project.optional-dependencies]
+# Heavier runtime deps are grouped so Phase 0 installs stay small.
+finder = ["anthropic>=0.39"]
+dynamic = ["playwright>=1.44", "httpx>=0.27"]
+dashboard = ["fastapi>=0.111", "uvicorn>=0.30", "jinja2>=3.1"]
+
+[project.scripts]
+bugbounty = "bugbounty.cli:app"
+
+[dependency-groups]
+dev = ["pytest>=8.2", "ruff>=0.6"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/bugbounty"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]

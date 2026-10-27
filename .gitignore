@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+dist/
+build/
+
+# Secrets & local creds — NEVER commit
+.env
+secrets/*
+!secrets/.gitkeep
+!secrets/*.example.yaml
+
+# Local run artifacts
+*.sqlite
+*.sqlite3
+results/
+runs/
+*.png
+!docs/**/*.png

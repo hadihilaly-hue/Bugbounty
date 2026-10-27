@@ -1,0 +1,38 @@
+# Allowlist — the ONLY thing that authorizes the harness against a host.
+# A target runs only if it is listed here with a safe_harbor_url and in_scope
+# assets. Anything not matched by an in_scope entry is skipped (fail closed).
+# `dry_run: true` stays until you explicitly clear a target for active payloads.
+targets:
+  # Target #0 — local, deliberately-vulnerable practice app. Safe to run fully.
+  - name: "OWASP Juice Shop (local sandbox)"
+    platform: "self"
+    safe_harbor_url: "https://owasp.org/www-project-juice-shop/"
+    ai_policy: "assisted_ok"
+    pays_cash: false
+    in_scope:
+      - "localhost"
+      - "127.0.0.1"
+    out_of_scope: []
+    auth:
+      multi_account: true
+      creds_ref: "secrets/juiceshop.yaml"
+    notes: "Ground-truth target for the pipeline. Local only."
+    dry_run: false
+
+  # Example real-program entry (commented; you paste in programs you choose).
+  # - name: "Example Program"
+  #   platform: "hackerone"
+  #   safe_harbor_url: "https://example.com/security/safe-harbor"
+  #   ai_policy: "assisted_ok"       # assisted_ok | disclosure_required | autonomous_banned | unknown
+  #   pays_cash: true
+  #   in_scope:
+  #     - "app.example.com"
+  #     - "*.api.example.com"
+  #   out_of_scope:
+  #     - "blog.example.com"
+  #     - "third-party-*.example.com"
+  #   auth:
+  #     multi_account: true
+  #     creds_ref: "secrets/example.yaml"
+  #   notes: "anything ambiguous to confirm"
+  #   dry_run: true
