@@ -4,10 +4,11 @@ An **authorized** bug-bounty vulnerability-discovery harness. It only runs again
 targets you have explicitly authorized (published scope + safe harbor) or code you
 own. Authorization is enforced in code, not just documented.
 
-> Status: **Phase 1** — the adversarial **validator** is implemented and tuned
-> against OWASP Juice Shop ground truth (precision 1.00 / recall 1.00 on the
-> built-in benchmark). Phase 0 guardrails and scope enforcement remain in place.
-> Finder, orchestrator, dashboard, and overnight jobs land in later phases.
+> Status: **Phase 2** — the **orchestrator** adds SQLite persistence, a
+> concurrency cap, hard budget / kill-switch enforcement, per-job spend logging
+> with credit-window warnings, resumable batches, and weak-target early stop, on
+> top of the Phase 1 validator (precision 1.00 / recall 1.00 on the Juice Shop
+> benchmark). Finder, dashboard, and overnight jobs land in later phases.
 
 ## Hard guardrails
 
@@ -94,6 +95,29 @@ uv run bugbounty validate candidates.yaml
 # measure validator precision/recall against a local Juice Shop sandbox
 docker run -d --name juiceshop -p 3000:3000 bkimminich/juice-shop
 DRY_RUN=false uv run bugbounty bench-juiceshop
+```
+
+## Orchestrator (run-batch)
+
+`bugbounty run-batch` validates a batch of candidates with everything a
+controlled overnight run needs, persisting to SQLite (`runs/bugbounty.db`):
+
+- **Concurrency cap** (`BB_CONCURRENCY`) across candidates per target.
+- **Hard caps** from the Phase 0 budget (`BB_MAX_TOKENS` / `BB_MAX_REQUESTS` /
+  `BB_MAX_WALL_CLOCK_SECONDS` / `BB_MAX_USD`): exceeding any one **aborts** the
+  batch rather than continuing.
+- **Credit window** (`BB_CREDIT_CAP_USD`): per-job spend is logged and the run
+  warns as cumulative spend crosses 50% / 75% / 90%, and stops at 100%.
+- **Kill switch**: `BB_KILL_SWITCH=true`, or `--kill-switch-file PATH` so an
+  overnight run can be halted by `touch`-ing a file.
+- **Resumable**: `--resume` with the same `--batch-id` skips already-validated
+  candidates.
+- **Weak-target early stop**: a target with no confirmations after the first N
+  attempts is abandoned.
+
+```bash
+docker run -d --name juiceshop -p 3000:3000 bkimminich/juice-shop
+DRY_RUN=false uv run bugbounty run-batch examples/juiceshop_candidates.yaml
 ```
 
 ## Target intake

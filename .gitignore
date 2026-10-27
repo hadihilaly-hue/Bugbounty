@@ -21,3 +21,6 @@ results/
 runs/
 *.png
 !docs/**/*.png
+*.db
+*.sqlite
+*.sqlite3
