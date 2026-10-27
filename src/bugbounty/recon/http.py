@@ -58,11 +58,12 @@ def extract_api_paths(text: str) -> list[str]:
     return sorted({m.group(0) for m in _API_PATH_RE.finditer(text)})
 
 
-def recon_http(base_url: str, timeout: float = 15.0, max_js: int = 10) -> Recon:
-    import httpx
+def recon_http(base_url: str, timeout: float = 15.0, max_js: int = 10, config=None) -> Recon:
+    # Paced per host so recon (which runs even in DRY_RUN) never hammers a target.
+    from ..net import build_client
 
     rec = Recon(base_url=base_url)
-    with httpx.Client(timeout=timeout, follow_redirects=True) as client:
+    with build_client(config, timeout=timeout, follow_redirects=True) as client:
         try:
             resp = client.get(base_url)
         except Exception as exc:  # noqa: BLE001 - recon failure is non-fatal

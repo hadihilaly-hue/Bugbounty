@@ -208,8 +208,39 @@ Each entry requires a `safe_harbor_url` and `in_scope` assets. See the commented
 example in `targets.yaml` for the full schema (`platform`, `ai_policy`, `pays_cash`,
 `in_scope` / `out_of_scope` globs, `auth`, `dry_run`).
 
-## Auth
+## Auth / live sessions
 
-Post-auth bugs (IDOR, broken access control, account takeover) need credentials. Put
-per-target creds or live browser cookies in `secrets/<target>.yaml` (gitignored); see
-`secrets/example.yaml.example`. Two accounts enable access-control testing.
+Post-auth bugs (IDOR, broken access control, account takeover) need credentials.
+Describe *how* to log in per target in the `auth.login` block of `targets.yaml`,
+and put *who* to log in as in a gitignored `secrets/<target>.yaml` (see
+`secrets/example.yaml.example`). Two accounts enable the two-account IDOR test.
+
+`SessionManager` (`src/bugbounty/net/session.py`) then holds a real session for a
+run:
+- **Cookie sessions + CSRF** (`login.mode: form`, `login.csrf_field`): logs in
+  through the anti-CSRF form, reuses the session cookie across requests (last
+  value wins if the app re-sets it mid-flow).
+- **Token APIs** (`login.mode: json`, `login.token_json_path`): reads the bearer
+  token and sends it as `Authorization`.
+- **Re-auth on expiry**: a mid-run `401`/expiry marker triggers a transparent
+  re-login without losing the run.
+- **Manual handed-in session** (`login.mode: manual`, or `cookies`/`bearer_token`
+  in secrets): paste a live browser session and the agent uses it directly —
+  skip headless login for anti-bot targets.
+- **MFA** is detected and surfaced, **never faked** (`login.mfa_marker` /
+  `mfa_status`, or `auth.mfa_required`); hand in a live session to proceed.
+
+DVWA is wired as a local CSRF+cookie practice target (`admin`/`password`).
+
+## Rate limiting / politeness
+
+Every request made through `net.build_client` (recon and the eval adapters) is
+paced **per host**, on top of the global budget caps — and pacing is active even
+in DRY_RUN recon, since recon also sends requests:
+- Conservative default of `BB_PER_HOST_RPS=1.0` request/second per host, with
+  jitter (`BB_PACING_JITTER`), tracked independently per host.
+- On `429`, honours `Retry-After` (seconds or HTTP-date), else capped exponential
+  backoff (`BB_BACKOFF_BASE_SECONDS` … `BB_BACKOFF_MAX_SECONDS`), up to
+  `BB_MAX_RETRIES_429` retries.
+- The global per-run request / concurrency / USD / wall-clock caps and the kill
+  switch still apply on top.

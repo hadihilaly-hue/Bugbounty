@@ -31,9 +31,35 @@ class Platform(StrEnum):
     SELF = "self"
 
 
+class LoginSpec(BaseModel):
+    """How to establish an authenticated session for a target.
+
+    ``mode``: 'form' (cookie session, optional CSRF token), 'json' (token API),
+    or 'manual' (use a handed-in cookie/bearer from secrets; no login request).
+    Everything is optional so existing targets keep working.
+    """
+
+    mode: str = "form"
+    url: str | None = None
+    csrf_url: str | None = None  # page carrying the CSRF token (defaults to url)
+    csrf_field: str | None = None  # hidden input name, e.g. "user_token"
+    user_field: str = "username"
+    pass_field: str = "password"
+    extra_fields: dict[str, str] = Field(default_factory=dict)  # static fields, e.g. Login=Login
+    token_json_path: str | None = None  # json mode: dotted path to the bearer token
+    success_url: str | None = None  # page to confirm auth succeeded
+    success_marker: str | None = None  # string that must be present when authed
+    expiry_status: int = 401  # status that means the session expired -> re-auth
+    expiry_marker: str | None = None  # body string that means expired (e.g. a login form)
+    mfa_marker: str | None = None  # body string that means MFA is required
+    mfa_status: int | None = None  # status that means MFA is required
+
+
 class TargetAuth(BaseModel):
     multi_account: bool = False
     creds_ref: str | None = None
+    login: LoginSpec | None = None
+    mfa_required: bool = False  # declared; the session manager surfaces, never fakes, MFA
 
 
 class Target(BaseModel):
