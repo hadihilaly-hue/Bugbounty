@@ -265,6 +265,15 @@ class Store:
                 ),
             )
 
+    def latest_benchmarks_by_name(self):
+        """Latest row per benchmark name (for cross-target comparison)."""
+        with self._connect() as con:
+            return con.execute(
+                "SELECT b.* FROM benchmarks b JOIN (SELECT name, MAX(created_at) mc "
+                "FROM benchmarks GROUP BY name) g ON b.name=g.name AND b.created_at=g.mc "
+                "ORDER BY b.name"
+            ).fetchall()
+
     def latest_benchmark(self, name: str | None = None):
         q = "SELECT * FROM benchmarks"
         args: tuple = ()

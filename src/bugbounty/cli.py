@@ -384,6 +384,72 @@ def juiceshop_eval(base_url: str = "http://localhost:3000", db: str | None = Non
         console.print(f"recorded to {db}")
 
 
+def _print_eval(res) -> None:
+    if not res.available:
+        console.print(f"[yellow]{res.target}: unavailable[/] -- {res.note}")
+        return
+    m, ms = res.metrics, res.metrics_supported
+    table = Table(title=f"{res.target} evaluation")
+    for col in ("candidate", "class", "category", "expected", "validator"):
+        table.add_column(col)
+    for cid, cls, cat, vulnerable, status, _note, _reason in res.rows:
+        table.add_row(cid, cls, cat, "vuln" if vulnerable else "safe", status)
+    console.print(table)
+    console.print(
+        f"{res.target}: ALL precision={m.precision:.2f} recall={m.recall:.2f} "
+        f"fp_rate={m.fp_rate:.2f} (tp={m.tp} fp={m.fp} tn={m.tn} fn={m.fn}) | "
+        f"SUPPORTED recall={ms.recall:.2f}"
+    )
+
+
+@app.command(name="eval-target")
+def eval_target(name: str, db: str | None = None) -> None:
+    """Grade the validator against one sandbox adapter."""
+    from bugbounty.jobs.eval_targets import all_targets
+
+    targets = all_targets()
+    t = targets.get(name)
+    if t is None:
+        console.print(f"[red]unknown target {name!r}; have: {', '.join(targets)}[/]")
+        raise typer.Exit(2)
+    res = t.run()
+    _print_eval(res)
+    if db and res.available:
+        from bugbounty.orchestrator import Store
+
+        Store(db).record_benchmark(f"eval:{res.target}", res.metrics)
+        console.print(f"recorded to {db}")
+
+
+@app.command(name="eval-all")
+def eval_all(db: str | None = None) -> None:
+    """Grade the validator against every available sandbox adapter."""
+    from bugbounty.jobs.eval_targets import all_targets
+
+    summary = Table(title="Eval targets")
+    for col in ("target", "available", "precision", "recall", "fp_rate", "tp/fp/tn/fn"):
+        summary.add_column(col)
+    for name, t in all_targets().items():
+        res = t.run()
+        if not res.available:
+            summary.add_row(name, "no", "-", "-", "-", res.note)
+            continue
+        m = res.metrics
+        summary.add_row(
+            name,
+            "yes",
+            f"{m.precision:.2f}",
+            f"{m.recall:.2f}",
+            f"{m.fp_rate:.2f}",
+            f"{m.tp}/{m.fp}/{m.tn}/{m.fn}",
+        )
+        if db:
+            from bugbounty.orchestrator import Store
+
+            Store(db).record_benchmark(f"eval:{name}", m)
+    console.print(summary)
+
+
 def _default_allowlist_exists() -> bool:
     return Path(DEFAULT_ALLOWLIST).exists()
 
