@@ -4,8 +4,10 @@ An **authorized** bug-bounty vulnerability-discovery harness. It only runs again
 targets you have explicitly authorized (published scope + safe harbor) or code you
 own. Authorization is enforced in code, not just documented.
 
-> Status: **Phase 0** — scaffold, guardrails, and scope enforcement. Finder,
-> validator, orchestrator, dashboard, and overnight jobs land in later phases.
+> Status: **Phase 1** — the adversarial **validator** is implemented and tuned
+> against OWASP Juice Shop ground truth (precision 1.00 / recall 1.00 on the
+> built-in benchmark). Phase 0 guardrails and scope enforcement remain in place.
+> Finder, orchestrator, dashboard, and overnight jobs land in later phases.
 
 ## Hard guardrails
 
@@ -59,6 +61,40 @@ uv run bugbounty scope "OWASP Juice Shop (local sandbox)" localhost
 ```
 
 `scope` exits non-zero when a host is blocked, so it is safe to gate scripts on it.
+
+## Validator
+
+The validator refuses to trust the finder. A candidate is only `CONFIRMED` when a
+proof harness *executes* against the target and its oracle demonstrates the bug;
+otherwise it is `REJECTED` (disproven) or `UNCONFIRMED` (no conclusive proof could
+run — dry-run, missing creds, target down, unsupported class). Only `CONFIRMED`
+reaches the review queue.
+
+Proof harnesses (one per class):
+
+- **XSS** — drives a real headless browser (Playwright); requires actual script
+  execution (a JS dialog or console marker), not mere reflection, and saves a
+  screenshot as evidence.
+- **IDOR** — two accounts; proves attacker account A can read victim account B's
+  object.
+- **SSRF / auth / injection** — a re-runnable HTTP PoC with an explicit success
+  oracle; emits the equivalent `curl`.
+
+Every harness that sends an active payload is gated by the same dry-run / kill-switch
+rules as the rest of the harness, so in dry-run it returns `UNCONFIRMED` rather than
+faking a result. Errors never yield `CONFIRMED`.
+
+```bash
+uv sync --extra dynamic --group dev          # playwright + httpx for live proofs
+uv run playwright install chromium
+
+# validate a YAML file of candidate findings
+uv run bugbounty validate candidates.yaml
+
+# measure validator precision/recall against a local Juice Shop sandbox
+docker run -d --name juiceshop -p 3000:3000 bkimminich/juice-shop
+DRY_RUN=false uv run bugbounty bench-juiceshop
+```
 
 ## Target intake
 
