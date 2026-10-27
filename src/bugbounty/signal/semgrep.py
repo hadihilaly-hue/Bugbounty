@@ -26,11 +26,22 @@ def parse_semgrep_json(data: dict) -> list[Signal]:
     return out
 
 
-def run_semgrep(code_path: str, config: str = "auto", timeout: int = 600) -> list[Signal]:
+# Registry rulesets used for own-code scanning (work offline once cached).
+DEFAULT_RULESETS = ("p/python", "p/security-audit", "p/javascript")
+
+
+def run_semgrep(
+    code_path: str, config: str | list[str] = "auto", timeout: int = 600
+) -> list[Signal]:
     if shutil.which("semgrep") is None:
         raise SignalUnavailable("semgrep not on PATH")
+    configs = [config] if isinstance(config, str) else list(config)
+    cmd = ["semgrep", "scan", "--json", "--quiet"]
+    for cfg in configs:
+        cmd += ["--config", cfg]
+    cmd.append(code_path)
     proc = subprocess.run(
-        ["semgrep", "scan", "--json", "--quiet", "--config", config, code_path],
+        cmd,
         capture_output=True,
         text=True,
         timeout=timeout,
