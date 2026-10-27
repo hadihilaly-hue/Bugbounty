@@ -66,6 +66,13 @@ CREATE TABLE IF NOT EXISTS reviews (
     created_at REAL NOT NULL,
     UNIQUE(batch_id, candidate_id)
 );
+CREATE TABLE IF NOT EXISTS benchmarks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    precision REAL, recall REAL, fp_rate REAL,
+    tp INTEGER, fp INTEGER, tn INTEGER, fn INTEGER,
+    created_at REAL NOT NULL
+);
 """
 
 
@@ -239,3 +246,31 @@ class Store:
         with self._connect() as con:
             rows = con.execute(q, args).fetchall()
         return {r["status"]: r["n"] for r in rows}
+
+    def record_benchmark(self, name: str, metrics) -> None:
+        with self._connect() as con:
+            con.execute(
+                "INSERT INTO benchmarks (name, precision, recall, fp_rate, tp, fp, tn, fn, "
+                "created_at) VALUES (?,?,?,?,?,?,?,?,?)",
+                (
+                    name,
+                    metrics.precision,
+                    metrics.recall,
+                    metrics.fp_rate,
+                    metrics.tp,
+                    metrics.fp,
+                    metrics.tn,
+                    metrics.fn,
+                    time.time(),
+                ),
+            )
+
+    def latest_benchmark(self, name: str | None = None):
+        q = "SELECT * FROM benchmarks"
+        args: tuple = ()
+        if name:
+            q += " WHERE name=?"
+            args = (name,)
+        q += " ORDER BY created_at DESC LIMIT 1"
+        with self._connect() as con:
+            return con.execute(q, args).fetchone()
