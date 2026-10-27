@@ -87,3 +87,27 @@ def test_missing_finding_404(tmp_path):
     _seed(tmp_path / "d.db")
     c = TestClient(create_app(str(tmp_path / "d.db")))
     assert c.get("/finding/9999").status_code == 404
+
+
+def test_invalid_decision_rejected(tmp_path):
+    st = _seed(tmp_path / "d.db")
+    vid = st.list_validations(["confirmed"])[0]["id"]
+    c = TestClient(create_app(str(tmp_path / "d.db")))
+    r = c.post(f"/finding/{vid}/review", params={"decision": "weird_e2e"})
+    assert r.status_code == 400
+    assert "good" not in st.reviews_map("b")
+
+
+def test_note_is_displayed(tmp_path):
+    st = _seed(tmp_path / "d.db")
+    vid = st.list_validations(["confirmed"])[0]["id"]
+    c = TestClient(create_app(str(tmp_path / "d.db")))
+    c.post(f"/finding/{vid}/review", params={"decision": "accept", "note": "ship it e2e"})
+    body = c.get(f"/finding/{vid}").text
+    assert "ship it e2e" in body
+
+
+def test_artifact_path_traversal_forbidden(tmp_path):
+    _seed(tmp_path / "d.db")
+    c = TestClient(create_app(str(tmp_path / "d.db")))
+    assert c.get("/artifact", params={"path": "/etc/passwd"}).status_code == 403

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import re
+import shlex
 
 from ...config import Config
 from ...scope import Target
@@ -18,12 +19,18 @@ from ..models import Candidate, Evidence, ValidationResult, ValidationStatus, Vu
 
 def _curl(req: dict) -> str:
     parts = ["curl", "-sS", "-X", req.get("method", "GET").upper()]
-    for k, v in (req.get("headers") or {}).items():
-        parts += ["-H", f"'{k}: {v}'"]
-    if req.get("body") is not None:
-        body = req["body"] if isinstance(req["body"], str) else json.dumps(req["body"])
-        parts += ["--data", f"'{body}'"]
-    parts.append(f"'{req['url']}'")
+    headers = dict(req.get("headers") or {})
+    body = req.get("body")
+    # Mirror the harness's httpx call: a dict body is sent as JSON, so the PoC
+    # must declare it too or the server form-decodes it and the bug won't fire.
+    if isinstance(body, dict) and not any(k.lower() == "content-type" for k in headers):
+        headers["Content-Type"] = "application/json"
+    for k, v in headers.items():
+        parts += ["-H", shlex.quote(f"{k}: {v}")]
+    if body is not None:
+        data = body if isinstance(body, str) else json.dumps(body)
+        parts += ["--data", shlex.quote(data)]
+    parts.append(shlex.quote(req["url"]))
     return " ".join(parts)
 
 
