@@ -4,10 +4,12 @@ An **authorized** bug-bounty vulnerability-discovery harness. It only runs again
 targets you have explicitly authorized (published scope + safe harbor) or code you
 own. Authorization is enforced in code, not just documented.
 
-> Status: **Phase 4 (in progress)** — a local **review dashboard** now completes
-> the finder -> validator -> dashboard loop (confirmed findings first, with
-> evidence, PoCs, and one-click review). Overnight jobs (FP benchmark, own-code
-> scan, nightly report) are the remaining Phase 4 work. See
+> Status: **Phase 4** — the review **dashboard** completes the finder ->
+> validator -> dashboard loop, and the job layer adds a validator
+> **false-positive benchmark** (vulnerable-vs-patched fixtures, fp_rate 0.00),
+> an **own-code Semgrep scan**, and a **nightly report** (findings, sandbox
+> precision/recall, spend vs the credit window with 50/75/90% warnings).
+> Optional extras (scope-parser corpus, more practice apps) remain. See
 > `docs/strix-evaluation.md` for the Strix decision.
 
 ## Hard guardrails
@@ -161,6 +163,18 @@ DRY_RUN=false uv run bugbounty run-batch examples/juiceshop_candidates.yaml
 uv run bugbounty dashboard --db runs/bugbounty.db --port 8787
 # open http://127.0.0.1:8787  (nothing leaves the machine)
 ```
+
+## Benchmarks & reports
+
+- `bugbounty fp-benchmark [--db]` - validator false-positive benchmark. Spins a
+  local server with vulnerable AND patched variants of the same endpoints and
+  checks that patched code is REJECTED. Reports precision / recall / fp_rate and
+  optionally records them to the store.
+- `bugbounty scan-code PATH [--config auto]` - run Semgrep over your own code and
+  list the signals (the finder's static signal, standalone).
+- `bugbounty report [--db] [--out]` - nightly report: findings by status, the
+  latest sandbox benchmark, and spend vs the credit window (`BB_CREDIT_CAP_USD`)
+  with WARNINGs at 50 / 75 / 90% and over the cap.
 
 ## Target intake
 

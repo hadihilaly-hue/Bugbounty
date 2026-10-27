@@ -283,6 +283,64 @@ def dashboard(
     uvicorn.run(create_app(db), host=host, port=port)
 
 
+@app.command()
+def report(db: str = "runs/bugbounty.db", out: str | None = None) -> None:
+    """Print (or write) the nightly report: findings, benchmark, spend warnings."""
+    from bugbounty.jobs.report import build_report
+    from bugbounty.orchestrator import Store
+
+    text = build_report(Store(db))
+    if out:
+        Path(out).write_text(text)
+        console.print(f"wrote {out}")
+    else:
+        console.print(text)
+
+
+@app.command(name="scan-code")
+def scan_code(path: str, config: str = "auto") -> None:
+    """Run Semgrep over your own code at PATH and list the signals."""
+    from bugbounty.signal.base import SignalUnavailable
+    from bugbounty.signal.semgrep import run_semgrep
+
+    try:
+        sigs = run_semgrep(path, config=config)
+    except SignalUnavailable as exc:
+        console.print(f"[red]{exc}[/]")
+        raise typer.Exit(2) from exc
+    table = Table(title=f"Semgrep signals ({path})")
+    for col in ("rule", "severity", "location", "message"):
+        table.add_column(col)
+    for sig in sigs[:200]:
+        table.add_row(sig.kind, sig.severity, sig.location, (sig.message or "")[:80])
+    console.print(table)
+    console.print(f"{len(sigs)} signal(s)")
+
+
+@app.command(name="fp-benchmark")
+def fp_benchmark(db: str | None = None) -> None:
+    """Validator false-positive benchmark on vulnerable-vs-patched fixtures."""
+    from bugbounty.jobs.fp_benchmark import run_fp_benchmark
+
+    metrics, rows = run_fp_benchmark()
+    table = Table(title="FP benchmark (vulnerable vs patched)")
+    for col in ("candidate", "expected", "validator"):
+        table.add_column(col)
+    for cid, vulnerable, status in rows:
+        table.add_row(cid, "vulnerable" if vulnerable else "patched", status)
+    console.print(table)
+    console.print(
+        f"precision={metrics.precision:.2f} recall={metrics.recall:.2f} "
+        f"fp_rate={metrics.fp_rate:.2f} "
+        f"(tp={metrics.tp} fp={metrics.fp} tn={metrics.tn} fn={metrics.fn})"
+    )
+    if db:
+        from bugbounty.orchestrator import Store
+
+        Store(db).record_benchmark("fp-benchmark", metrics)
+        console.print(f"recorded to {db}")
+
+
 def _default_allowlist_exists() -> bool:
     return Path(DEFAULT_ALLOWLIST).exists()
 
