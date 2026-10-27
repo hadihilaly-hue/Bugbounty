@@ -57,6 +57,15 @@ CREATE TABLE IF NOT EXISTS spend (
     usd REAL DEFAULT 0,
     created_at REAL NOT NULL
 );
+CREATE TABLE IF NOT EXISTS reviews (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    batch_id TEXT NOT NULL,
+    candidate_id TEXT NOT NULL,
+    decision TEXT NOT NULL,
+    note TEXT,
+    created_at REAL NOT NULL,
+    UNIQUE(batch_id, candidate_id)
+);
 """
 
 
@@ -175,3 +184,58 @@ class Store:
         with self._connect() as con:
             rows = con.execute(q, args).fetchall()
         return {(r["target_name"] or "?"): float(r["t"]) for r in rows}
+
+    def list_validations(
+        self, statuses: list[str] | None = None, batch_id: str | None = None
+    ) -> list[sqlite3.Row]:
+        q = "SELECT * FROM validations"
+        clauses: list[str] = []
+        args: list = []
+        if statuses:
+            clauses.append(f"status IN ({','.join('?' for _ in statuses)})")
+            args.extend(statuses)
+        if batch_id:
+            clauses.append("batch_id=?")
+            args.append(batch_id)
+        if clauses:
+            q += " WHERE " + " AND ".join(clauses)
+        q += " ORDER BY (status='confirmed') DESC, created_at DESC"
+        with self._connect() as con:
+            return con.execute(q, tuple(args)).fetchall()
+
+    def get_validation(self, validation_id: int) -> sqlite3.Row | None:
+        with self._connect() as con:
+            return con.execute("SELECT * FROM validations WHERE id=?", (validation_id,)).fetchone()
+
+    def record_review(
+        self, batch_id: str, candidate_id: str, decision: str, note: str | None = None
+    ) -> None:
+        with self._connect() as con:
+            con.execute(
+                "INSERT INTO reviews (batch_id, candidate_id, decision, note, created_at) "
+                "VALUES (?,?,?,?,?) ON CONFLICT(batch_id, candidate_id) "
+                "DO UPDATE SET decision=excluded.decision, note=excluded.note, "
+                "created_at=excluded.created_at",
+                (batch_id, candidate_id, decision, note, time.time()),
+            )
+
+    def reviews_map(self, batch_id: str | None = None) -> dict[str, str]:
+        q = "SELECT candidate_id, decision FROM reviews"
+        args: tuple = ()
+        if batch_id:
+            q += " WHERE batch_id=?"
+            args = (batch_id,)
+        with self._connect() as con:
+            rows = con.execute(q, args).fetchall()
+        return {r["candidate_id"]: r["decision"] for r in rows}
+
+    def status_counts(self, batch_id: str | None = None) -> dict[str, int]:
+        q = "SELECT status, COUNT(*) AS n FROM validations"
+        args: tuple = ()
+        if batch_id:
+            q += " WHERE batch_id=?"
+            args = (batch_id,)
+        q += " GROUP BY status"
+        with self._connect() as con:
+            rows = con.execute(q, args).fetchall()
+        return {r["status"]: r["n"] for r in rows}
