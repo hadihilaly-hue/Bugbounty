@@ -268,6 +268,21 @@ def find(
         console.print(f"wrote {out}")
 
 
+@app.command()
+def dashboard(
+    db: str = "runs/bugbounty.db",
+    host: str = "127.0.0.1",
+    port: int = 8787,
+) -> None:
+    """Serve the local review dashboard (confirmed findings first)."""
+    import uvicorn
+
+    from bugbounty.dashboard import create_app
+
+    console.print(f"serving review dashboard for {db} at http://{host}:{port}")
+    uvicorn.run(create_app(db), host=host, port=port)
+
+
 def _default_allowlist_exists() -> bool:
     return Path(DEFAULT_ALLOWLIST).exists()
 

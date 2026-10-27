@@ -4,11 +4,11 @@ An **authorized** bug-bounty vulnerability-discovery harness. It only runs again
 targets you have explicitly authorized (published scope + safe harbor) or code you
 own. Authorization is enforced in code, not just documented.
 
-> Status: **Phase 3** — the **finder** (deterministic recon + Semgrep/Nuclei
-> signal + optional Anthropic reasoning) proposes candidates that flow through
-> the Phase 1 validator and Phase 2 orchestrator. On the Juice Shop sandbox,
-> `find` -> `run-batch` confirms a real SQLi end-to-end. Dashboard and overnight
-> jobs land in Phase 4. See `docs/strix-evaluation.md` for the Strix decision.
+> Status: **Phase 4 (in progress)** — a local **review dashboard** now completes
+> the finder -> validator -> dashboard loop (confirmed findings first, with
+> evidence, PoCs, and one-click review). Overnight jobs (FP benchmark, own-code
+> scan, nightly report) are the remaining Phase 4 work. See
+> `docs/strix-evaluation.md` for the Strix decision.
 
 ## Hard guardrails
 
@@ -145,6 +145,21 @@ controlled overnight run needs, persisting to SQLite (`runs/bugbounty.db`):
 ```bash
 docker run -d --name juiceshop -p 3000:3000 bkimminich/juice-shop
 DRY_RUN=false uv run bugbounty run-batch examples/juiceshop_candidates.yaml
+```
+
+## Review dashboard
+
+`bugbounty dashboard` serves a local FastAPI review UI over the SQLite store:
+
+- **Confirmed findings first** - the review queue; everything else is grouped
+  below, with `UNCONFIRMED` flagged as needing a human.
+- **Per-finding detail** - validator reasoning, the re-runnable PoC, evidence
+  (HTTP exchanges, screenshots), and a copyable Markdown report.
+- **One-click review** - accept / dismiss / needs-info, persisted to the store.
+
+```bash
+uv run bugbounty dashboard --db runs/bugbounty.db --port 8787
+# open http://127.0.0.1:8787  (nothing leaves the machine)
 ```
 
 ## Target intake
