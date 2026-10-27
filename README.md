@@ -4,11 +4,11 @@ An **authorized** bug-bounty vulnerability-discovery harness. It only runs again
 targets you have explicitly authorized (published scope + safe harbor) or code you
 own. Authorization is enforced in code, not just documented.
 
-> Status: **Phase 2** — the **orchestrator** adds SQLite persistence, a
-> concurrency cap, hard budget / kill-switch enforcement, per-job spend logging
-> with credit-window warnings, resumable batches, and weak-target early stop, on
-> top of the Phase 1 validator (precision 1.00 / recall 1.00 on the Juice Shop
-> benchmark). Finder, dashboard, and overnight jobs land in later phases.
+> Status: **Phase 3** — the **finder** (deterministic recon + Semgrep/Nuclei
+> signal + optional Anthropic reasoning) proposes candidates that flow through
+> the Phase 1 validator and Phase 2 orchestrator. On the Juice Shop sandbox,
+> `find` -> `run-batch` confirms a real SQLi end-to-end. Dashboard and overnight
+> jobs land in Phase 4. See `docs/strix-evaluation.md` for the Strix decision.
 
 ## Hard guardrails
 
@@ -96,6 +96,33 @@ uv run bugbounty validate candidates.yaml
 docker run -d --name juiceshop -p 3000:3000 bkimminich/juice-shop
 DRY_RUN=false uv run bugbounty bench-juiceshop
 ```
+
+## Finder
+
+`bugbounty find` proposes candidate findings, cheap signal first:
+
+- **Recon** (`recon/http.py`) - crawls the target for endpoints, params, and JS
+  bundles (including API paths embedded in minified bundles).
+- **Signal** - Semgrep (`--code-path`, static) and Nuclei (web) wrappers; both
+  degrade gracefully when the tool is absent.
+- **Heuristics** - deterministic candidates from common patterns (a login
+  endpoint -> SQLi auth-bypass, a search param -> DOM XSS). No credit.
+- **Anthropic reasoning** (optional) - turns recon + signal into candidates and
+  is the only credit consumer; every call reports tokens + a USD cost the
+  orchestrator records against the budget caps and credit window. Choose the
+  model with `BB_ANTHROPIC_MODEL`.
+
+Candidates are only *claims* - the validator is the gate:
+
+```bash
+uv run bugbounty find "OWASP Juice Shop (local sandbox)" \
+    --base-url http://localhost:3000 --out candidates.yaml
+DRY_RUN=false uv run bugbounty run-batch candidates.yaml
+```
+
+Add `--no-use-llm` for a credit-free run (recon + heuristics only). Strix was
+evaluated as a possible chassis; see `docs/strix-evaluation.md` for why we build
+our own and keep Strix as an optional candidate source.
 
 ## Orchestrator (run-batch)
 

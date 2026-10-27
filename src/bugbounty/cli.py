@@ -216,6 +216,58 @@ def run_batch(
     console.print(f"persisted to {db}; {res.confirmed} finding(s) in the review queue")
 
 
+@app.command()
+def find(
+    target_name: str,
+    base_url: str | None = None,
+    code_path: str | None = None,
+    out: str | None = None,
+    use_llm: bool = True,
+    allowlist: str = DEFAULT_ALLOWLIST,
+) -> None:
+    """Propose candidate findings (recon + signal + optional Anthropic reasoning)."""
+    from urllib.parse import urlparse
+
+    import yaml
+
+    from bugbounty.finder import AnthropicReasoner, Finder
+
+    cfg = load_config()
+    al = load_allowlist(allowlist)
+    target = al.target_by_name(target_name)
+    if target is None:
+        console.print(f"[red]no target named {target_name!r} in {allowlist}[/]")
+        raise typer.Exit(2)
+    if base_url:
+        host = urlparse(base_url).hostname or base_url
+        decision = al.decide(target_name, host)
+        if not decision.allowed:
+            console.print(f"[red]refusing: {host} is out of scope — {decision.reason}[/]")
+            raise typer.Exit(2)
+
+    reasoner = AnthropicReasoner() if use_llm else None
+    res = Finder(cfg, reasoner=reasoner).find(
+        target, base_url=base_url, code_path=code_path, use_llm=use_llm
+    )
+    table = Table(title=f"Candidates for {target_name}")
+    for col in ("id", "class", "source", "title"):
+        table.add_column(col)
+    for c in res.candidates:
+        table.add_row(c.id, c.vuln_class.value, c.source, c.title)
+    console.print(table)
+    for n in res.notes:
+        console.print(f"[dim]note: {n}[/]")
+    console.print(
+        f"{len(res.candidates)} candidate(s); llm cost ${res.cost_usd:.4f} "
+        f"(in={res.input_tokens} out={res.output_tokens})"
+    )
+    if out:
+        Path(out).write_text(
+            yaml.safe_dump({"candidates": [c.model_dump(mode="json") for c in res.candidates]})
+        )
+        console.print(f"wrote {out}")
+
+
 def _default_allowlist_exists() -> bool:
     return Path(DEFAULT_ALLOWLIST).exists()
 

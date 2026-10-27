@@ -1,0 +1,87 @@
+"""Lightweight HTTP recon: discover endpoints, params, and JS bundles.
+
+Deterministic and cheap (no LLM). Fetches the base page, extracts links /
+scripts / form inputs, then scans same-host JS bundles for ``/api`` and ``/rest``
+paths and parameter names. Everything here is advisory input for the finder.
+"""
+
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass, field
+from html.parser import HTMLParser
+from urllib.parse import urljoin, urlparse
+
+_API_PATH_RE = re.compile(r"/(?:api|rest)/[A-Za-z0-9_\-/]+")
+_PARAM_RE = re.compile(r"[?&]([A-Za-z0-9_]+)=")
+
+
+@dataclass
+class Recon:
+    base_url: str
+    endpoints: list[str] = field(default_factory=list)
+    params: list[str] = field(default_factory=list)
+    js_bundles: list[str] = field(default_factory=list)
+    notes: list[str] = field(default_factory=list)
+
+
+class _Extractor(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self.links: list[str] = []
+        self.scripts: list[str] = []
+        self.inputs: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs) -> None:
+        d = dict(attrs)
+        if tag == "a" and d.get("href"):
+            self.links.append(d["href"])
+        elif tag == "script" and d.get("src"):
+            self.scripts.append(d["src"])
+        elif tag in ("input", "textarea", "select") and d.get("name"):
+            self.inputs.append(d["name"])
+
+
+def _same_host(a: str, b: str) -> bool:
+    return urlparse(a).hostname == urlparse(b).hostname
+
+
+def extract_from_html(base_url: str, html: str) -> tuple[list[str], list[str], list[str]]:
+    p = _Extractor()
+    p.feed(html)
+    links = [urljoin(base_url, h) for h in p.links]
+    scripts = [urljoin(base_url, s) for s in p.scripts]
+    return links, scripts, p.inputs
+
+
+def extract_api_paths(text: str) -> list[str]:
+    return sorted({m.group(0) for m in _API_PATH_RE.finditer(text)})
+
+
+def recon_http(base_url: str, timeout: float = 15.0, max_js: int = 10) -> Recon:
+    import httpx
+
+    rec = Recon(base_url=base_url)
+    with httpx.Client(timeout=timeout, follow_redirects=True) as client:
+        try:
+            resp = client.get(base_url)
+        except Exception as exc:  # noqa: BLE001 - recon failure is non-fatal
+            rec.notes.append(f"base fetch failed: {exc}")
+            return rec
+        links, scripts, inputs = extract_from_html(base_url, resp.text)
+        rec.params.extend(inputs)
+        same_host_scripts = [s for s in scripts if _same_host(base_url, s)]
+        rec.js_bundles = (same_host_scripts or scripts)[:max_js]
+        rec.endpoints.extend(sorted({x for x in links if _same_host(base_url, x)}))
+        for link in links:
+            rec.params.extend(m.group(1) for m in _PARAM_RE.finditer(link))
+        api: set[str] = set()
+        for js in rec.js_bundles:
+            try:
+                api.update(urljoin(base_url, p) for p in extract_api_paths(client.get(js).text))
+            except Exception:  # noqa: BLE001 - skip a bad bundle
+                continue
+        rec.endpoints.extend(sorted(api))
+    rec.endpoints = sorted(set(rec.endpoints))
+    rec.params = sorted(set(rec.params))
+    return rec
