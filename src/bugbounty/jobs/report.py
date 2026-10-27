@@ -24,6 +24,16 @@ def build_report(store: Store, credit: CreditWindow | None = None) -> str:
             f"· fp_rate {b['fp_rate']:.2f} (tp={b['tp']} fp={b['fp']} tn={b['tn']} fn={b['fn']})",
         ]
 
+    per = store.latest_benchmarks_by_name()
+    if per:
+        lines += ["", "## Eval targets (latest per sandbox)"]
+        for row in per:
+            lines.append(
+                f"- {row['name']}: precision {row['precision']:.2f} "
+                f"\u00b7 recall {row['recall']:.2f} \u00b7 fp_rate {row['fp_rate']:.2f} "
+                f"(tp={row['tp']} fp={row['fp']} tn={row['tn']} fn={row['fn']})"
+            )
+
     lines += ["", "## Spend", f"- total: ${total:.2f}"]
     if credit.cap_usd > 0:
         pct = total / credit.cap_usd

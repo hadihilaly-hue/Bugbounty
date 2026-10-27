@@ -176,6 +176,31 @@ uv run bugbounty dashboard --db runs/bugbounty.db --port 8787
   latest sandbox benchmark, and spend vs the credit window (`BB_CREDIT_CAP_USD`)
   with WARNINGs at 50 / 75 / 90% and over the cap.
 
+## Evaluation sandboxes (labelled ground truth)
+
+Modular adapters (one per target, in `src/bugbounty/jobs/eval_targets/`) grade the
+validator against sandboxes whose bugs are already documented, so every run is
+scored against an answer key. They reuse the existing proof harnesses unchanged;
+each sets a local `Config(dry_run=False)` + a local-only `Target` so proofs
+execute (global `DRY_RUN` stays on).
+
+```
+bugbounty eval-target dvwa --db runs/eval.db   # grade one sandbox
+bugbounty eval-all --db runs/eval.db           # grade every reachable sandbox
+```
+
+| target | setup | surface graded |
+| --- | --- | --- |
+| `juiceshop` | `docker run -p 3000:3000 bkimminich/juice-shop` | 18 cases: SQLi / XSS / IDOR / auth / exposure |
+| `dvwa` | `ghcr.io/digininja/dvwa` (low security) | SQLi, command injection, LFI, reflected XSS + safe baselines |
+| `crapi` | `docker compose up` (OWASP crAPI) | BOLA + excessive-data-exposure + enforced-auth false alarms |
+| `owasp-benchmark` | Maven/Tomcat build (no Dockerfile) | answer key (2740 labelled cases) wired; live DAST run needs the Benchmark crawler |
+
+Results are written to the SQLite store (`eval:<target>`) and compared per
+sandbox in the nightly report. DVWA reflected XSS is graded as HTTP reflection
+(payload echoed unescaped), a weaker bar than the browser-execution XSS harness,
+and is flagged as such.
+
 ## Target intake
 
 Add programs to `targets.yaml` yourself — the harness never scrapes or auto-ingests.
