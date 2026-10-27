@@ -76,6 +76,107 @@ def scope(
     raise typer.Exit(code=0 if decision.allowed else 1)
 
 
+@app.command()
+def validate(
+    candidates_file: str,
+    allowlist: str = DEFAULT_ALLOWLIST,
+) -> None:
+    """Run the adversarial validator over a YAML file of candidate findings."""
+    import yaml
+
+    from bugbounty.validator import Candidate, Validator
+
+    cfg = load_config()
+    al = load_allowlist(allowlist)
+    validator = Validator(cfg)
+    data = yaml.safe_load(Path(candidates_file).read_text()) or {}
+    raw = data.get("candidates") or []
+    table = Table(title=f"Validation results ({candidates_file})")
+    for col in ("id", "class", "status", "queue", "reason"):
+        table.add_column(col)
+    for item in raw:
+        cand = Candidate.model_validate(item)
+        target = al.target_by_name(cand.target_name)
+        if target is None:
+            table.add_row(cand.id, cand.vuln_class.value, "UNCONFIRMED", "no", "unknown target")
+            continue
+        decision = al.decide(cand.target_name, cand.host)
+        if not decision.allowed:
+            table.add_row(
+                cand.id,
+                cand.vuln_class.value,
+                "UNCONFIRMED",
+                "no",
+                f"out of scope: {decision.reason}",
+            )
+            continue
+        res = validator.validate(cand, target)
+        colour = (
+            "green"
+            if res.in_review_queue
+            else ("red" if res.status.value == "rejected" else "yellow")
+        )
+        table.add_row(
+            cand.id,
+            cand.vuln_class.value,
+            f"[{colour}]{res.status.value.upper()}[/]",
+            "yes" if res.in_review_queue else "no",
+            res.reason,
+        )
+    console.print(table)
+
+
+@app.command(name="bench-juiceshop")
+def bench_juiceshop(
+    base_url: str = "http://localhost:3000",
+    target_name: str = "OWASP Juice Shop (local sandbox)",
+    allowlist: str = DEFAULT_ALLOWLIST,
+) -> None:
+    """Measure validator precision/recall against the local Juice Shop sandbox."""
+    from urllib.parse import urlparse
+
+    cfg = load_config()
+    al = load_allowlist(allowlist)
+    target = al.target_by_name(target_name)
+    if target is None:
+        console.print(f"[red]no target named {target_name!r} in {allowlist}[/]")
+        raise typer.Exit(2)
+    host = urlparse(base_url).hostname or base_url
+    decision = al.decide(target_name, host)
+    if not decision.allowed:
+        console.print(f"[red]refusing: {host} is out of scope — {decision.reason}[/]")
+        raise typer.Exit(2)
+    if not cfg.active_payloads_allowed(target.dry_run):
+        console.print(
+            "[yellow]active payloads are disabled by the dry-run gate.[/]\n"
+            "The benchmark proves bugs on a sandbox you own; re-run with the gate "
+            "cleared:\n    DRY_RUN=false bugbounty bench-juiceshop"
+        )
+        raise typer.Exit(3)
+
+    from bugbounty.validator.benchmark import run_benchmark
+
+    rows, m = run_benchmark(target, cfg, base_url)
+    table = Table(title="Juice Shop validator benchmark")
+    for col in ("candidate", "class", "expected", "status", "correct"):
+        table.add_column(col)
+    for cand, expect, res in rows:
+        confirmed = res.in_review_queue
+        correct = confirmed == expect
+        table.add_row(
+            cand.id,
+            cand.vuln_class.value,
+            "VULN" if expect else "SAFE",
+            res.status.value.upper(),
+            "[green]ok[/]" if correct else "[red]MISS[/]",
+        )
+    console.print(table)
+    console.print(
+        f"precision={m.precision:.2f}  recall={m.recall:.2f}  "
+        f"fp_rate={m.fp_rate:.2f}  (tp={m.tp} fp={m.fp} tn={m.tn} fn={m.fn})"
+    )
+
+
 def _default_allowlist_exists() -> bool:
     return Path(DEFAULT_ALLOWLIST).exists()
 
