@@ -274,3 +274,10 @@ class Store:
         q += " ORDER BY created_at DESC LIMIT 1"
         with self._connect() as con:
             return con.execute(q, args).fetchone()
+
+    def review_detail(self, batch_id: str, candidate_id: str):
+        with self._connect() as con:
+            return con.execute(
+                "SELECT decision, note FROM reviews WHERE batch_id=? AND candidate_id=?",
+                (batch_id, candidate_id),
+            ).fetchone()

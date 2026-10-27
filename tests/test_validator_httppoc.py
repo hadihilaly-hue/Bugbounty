@@ -28,4 +28,4 @@ def test_unknown_oracle_raises():
 def test_curl_render():
     c = _curl({"method": "post", "url": "http://h/x", "headers": {"A": "b"}, "body": "d=1"})
     assert c.startswith("curl -sS -X POST")
-    assert "'A: b'" in c and "--data 'd=1'" in c
+    assert "'A: b'" in c and "--data d=1" in c

@@ -9,11 +9,16 @@ from __future__ import annotations
 
 import html
 import json
+from pathlib import Path
+from urllib.parse import quote
 
 from fastapi import FastAPI, Query
-from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse, RedirectResponse
 
 from ..orchestrator.store import Store
+
+_ALLOWED_DECISIONS = {"accept", "dismiss", "needs_info"}
+_IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
 
 _CSS = """
 body{font:14px/1.5 system-ui,sans-serif;margin:2rem;color:#111;max-width:60rem}
@@ -24,7 +29,12 @@ table{border-collapse:collapse;width:100%} td,th{border:1px solid #ddd;padding:.
 pre{background:#f6f8fa;padding:.75rem;border-radius:.4rem;overflow:auto;white-space:pre-wrap}
 a{color:#0969da;text-decoration:none} .flag{color:#9a6700;font-weight:600}
 button{margin-right:.5rem;padding:.35rem .7rem}
+img{margin-top:.5rem}
 """
+
+
+def _is_image(path: str) -> bool:
+    return any(path.lower().endswith(ext) for ext in _IMAGE_EXTS)
 
 
 def _badge(status: str) -> str:
@@ -101,17 +111,27 @@ def create_app(db_path: str = "runs/bugbounty.db") -> FastAPI:
         ev_html = ""
         for e in evidence:
             inner = ""
-            if e.get("path"):
-                inner += f"<div>artifact: <code>{html.escape(e['path'])}</code></div>"
+            path = e.get("path")
+            if path:
+                inner += f"<div>artifact: <code>{html.escape(path)}</code></div>"
+                if _is_image(path):
+                    inner += (
+                        f"<img src='/artifact?path={quote(path)}' "
+                        "style='max-width:40rem;border:1px solid #ddd'>"
+                    )
             if e.get("content"):
                 inner += f"<pre>{html.escape(e['content'][:4000])}</pre>"
             ev_html += f"<h3>{html.escape(e.get('label', e.get('kind', 'evidence')))}</h3>{inner}"
-        decision = store.reviews_map().get(r["candidate_id"], "none")
+        rev = store.review_detail(r["batch_id"], r["candidate_id"])
+        decision = rev["decision"] if rev else "none"
+        note = (rev["note"] if rev else "") or ""
+        note_html = f"<div>note: {html.escape(note)}</div>" if note else ""
         poc = html.escape(r["poc"] or "(none)")
         body = (
             f"<p><a href='/'>&larr; queue</a></p><h1>{html.escape(r['candidate_id'])} {_badge(r['status'])}</h1>"
             f"<p>class <b>{html.escape(r['vuln_class'])}</b> · target {html.escape(r['target_name'])} · "
             f"reproducible {'yes' if r['reproducible'] else 'no'} · review: <b>{html.escape(decision)}</b></p>"
+            f"{note_html}"
             f"<h2>validator reasoning</h2><pre>{html.escape(r['reason'] or '')}</pre>"
             f"<h2>proof of concept</h2><pre>{poc}</pre>"
             f"<h2>evidence</h2>{ev_html or '<p>(none)</p>'}"
@@ -119,14 +139,33 @@ def create_app(db_path: str = "runs/bugbounty.db") -> FastAPI:
             "<button onclick=\"rev('accept')\">Accept</button>"
             "<button onclick=\"rev('dismiss')\">Dismiss</button>"
             "<button onclick=\"rev('needs_info')\">Needs info</button>"
-            f" · <a href='/finding/{vid}/report'>copy report</a>"
-            "<script>function rev(d){fetch(location.pathname+'/review?decision='+d+'&note='+"
-            "encodeURIComponent(document.getElementById('note').value),{method:'POST'}).then(()=>location.reload())}</script>"
+            '<button onclick="copyReport()">Copy report</button>'
+            f" · <a href='/finding/{vid}/report'>raw report</a>"
+            "<script>"
+            "function rev(d){fetch(location.pathname+'/review?decision='+d+'&note='+"
+            "encodeURIComponent(document.getElementById('note').value),{method:'POST'}).then(()=>location.reload())}"
+            "function copyReport(){fetch(location.pathname+'/report').then(r=>r.text())"
+            ".then(t=>navigator.clipboard.writeText(t)).then(()=>alert('report copied to clipboard'))}"
+            "</script>"
         )
         return HTMLResponse(_page(r["candidate_id"], body))
 
+    @app.get("/artifact")
+    def artifact(path: str):
+        base = Path("runs").resolve()
+        rp = Path(path).resolve()
+        try:
+            rp.relative_to(base)
+        except ValueError:
+            return PlainTextResponse("forbidden", status_code=403)
+        if not rp.is_file():
+            return PlainTextResponse("not found", status_code=404)
+        return FileResponse(str(rp))
+
     @app.post("/finding/{vid}/review")
     def review(vid: int, decision: str = Query(...), note: str | None = Query(None)):
+        if decision not in _ALLOWED_DECISIONS:
+            return PlainTextResponse(f"invalid decision {decision!r}", status_code=400)
         r = store.get_validation(vid)
         if r is None:
             return PlainTextResponse("not found", status_code=404)
