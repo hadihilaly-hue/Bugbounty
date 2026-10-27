@@ -19,10 +19,12 @@ def test_run_semgrep_builds_multiple_configs(monkeypatch):
     class _Proc:
         stdout = '{"results": []}'
 
+    def _fake_run(cmd, **_kw):
+        captured["cmd"] = cmd
+        return _Proc()
+
     monkeypatch.setattr(sg.shutil, "which", lambda _n: "/usr/bin/semgrep")
-    monkeypatch.setattr(
-        sg.subprocess, "run", lambda cmd, **kw: captured.setdefault("cmd", cmd) or _Proc()
-    )
+    monkeypatch.setattr(sg.subprocess, "run", _fake_run)
     sg.run_semgrep("somepath", config=["p/python", "p/security-audit"])
     cmd = captured["cmd"]
     assert cmd.count("--config") == 2
