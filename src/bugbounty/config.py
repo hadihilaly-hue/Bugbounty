@@ -9,12 +9,28 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 
+_TRUE_VALUES = {"1", "true", "yes", "on"}
+_FALSE_VALUES = {"0", "false", "no", "off"}
+
 
 def _env_bool(name: str, default: bool) -> bool:
+    """Parse a boolean env var, failing loudly rather than failing open.
+
+    An unset or blank value keeps the (safe) default. An unrecognised value
+    raises instead of silently reading as False -- a typo in DRY_RUN must never
+    be what turns active exploit payloads on.
+    """
     raw = os.environ.get(name)
-    if raw is None:
+    if raw is None or not raw.strip():
         return default
-    return raw.strip().lower() in {"1", "true", "yes", "on"}
+    value = raw.strip().lower()
+    if value in _TRUE_VALUES:
+        return True
+    if value in _FALSE_VALUES:
+        return False
+    raise ValueError(
+        f"{name}={raw!r} is not a boolean; use one of {sorted(_TRUE_VALUES | _FALSE_VALUES)}"
+    )
 
 
 def _env_int(name: str, default: int) -> int:
@@ -35,10 +51,12 @@ def _env_float(name: str, default: float) -> float:
 class BudgetCaps:
     """Hard per-run ceilings. The orchestrator aborts a run when any is hit."""
 
-    max_tokens: int = _env_int("BB_MAX_TOKENS", 2_000_000)
-    max_requests: int = _env_int("BB_MAX_REQUESTS", 5_000)
-    max_wall_clock_seconds: int = _env_int("BB_MAX_WALL_CLOCK_SECONDS", 3 * 60 * 60)
-    max_usd: float = _env_float("BB_MAX_USD", 10.0)
+    max_tokens: int = field(default_factory=lambda: _env_int("BB_MAX_TOKENS", 2_000_000))
+    max_requests: int = field(default_factory=lambda: _env_int("BB_MAX_REQUESTS", 5_000))
+    max_wall_clock_seconds: int = field(
+        default_factory=lambda: _env_int("BB_MAX_WALL_CLOCK_SECONDS", 3 * 60 * 60)
+    )
+    max_usd: float = field(default_factory=lambda: _env_float("BB_MAX_USD", 10.0))
 
 
 @dataclass(frozen=True)
