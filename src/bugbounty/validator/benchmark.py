@@ -23,7 +23,10 @@ from ..scope import Target
 from .engine import Validator
 from .models import Candidate, ValidationResult, ValidationStatus, VulnClass
 
-XSS_PAYLOAD = '<iframe src="javascript:alert(`xss-bench`)">'
+# Payload template: the harness substitutes {NONCE} with a fresh high-entropy
+# token and confirms only if a dialog/console message carries that exact token,
+# so a dialog from Juice Shop's own JS can never be mistaken for the bug.
+XSS_PAYLOAD = '<iframe src="javascript:alert(`{NONCE}`)">'
 _PW = "BenchPassw0rd!"
 
 
@@ -96,7 +99,6 @@ def _prepare_victim(base_url: str) -> tuple[dict, str, str]:
 
 
 def build_cases(base_url: str, victim_url: str, victim_marker: str) -> list[tuple[Candidate, bool]]:
-    inert = f"inert-{uuid.uuid4().hex[:6]}"
     login_spec = {
         "url": f"{base_url}/rest/user/login",
         "method": "POST",
@@ -120,7 +122,9 @@ def build_cases(base_url: str, victim_url: str, victim_marker: str) -> list[tupl
                             "body": {"email": "' OR 1=1--", "password": "x"},
                         }
                     ],
-                    "oracle": {"type": "contains", "value": "authentication"},
+                    # Strict oracle: a *structurally valid JWT* must be returned,
+                    # not merely the word "authentication" somewhere in the body.
+                    "oracle": {"type": "jwt", "source": "json", "path": "authentication.token"},
                 },
             ),
             True,
@@ -133,6 +137,10 @@ def build_cases(base_url: str, victim_url: str, victim_marker: str) -> list[tupl
                 title="DOM XSS via search query",
                 url=f"{base_url}/#/search?q={XSS_PAYLOAD}",
                 host="localhost",
+                params={
+                    "mode": "dom",
+                    "url_template": f"{base_url}/#/search?q={XSS_PAYLOAD}",
+                },
             ),
             True,
         ),
@@ -169,7 +177,9 @@ def build_cases(base_url: str, victim_url: str, victim_marker: str) -> list[tupl
                             "body": {"email": "nobody@test.local", "password": "wrong"},
                         }
                     ],
-                    "oracle": {"type": "contains", "value": "authentication"},
+                    # A failed login returns no token at this path -> jwt oracle
+                    # finds nothing to validate -> REJECTED (not a bypass).
+                    "oracle": {"type": "jwt", "source": "json", "path": "authentication.token"},
                 },
             ),
             False,
@@ -180,23 +190,32 @@ def build_cases(base_url: str, victim_url: str, victim_marker: str) -> list[tupl
                 target_name="juice",
                 vuln_class=VulnClass.XSS,
                 title="Reflected but non-executing content",
-                url=f"{base_url}/#/search?q=<b>{inert}</b>",
+                url=f"{base_url}/#/search?q=<b>{{NONCE}}</b>",
                 host="localhost",
+                params={
+                    # The nonce is reflected as inert <b> text; no script runs,
+                    # so no attributed dialog fires -> REJECTED.
+                    "mode": "dom",
+                    "url_template": f"{base_url}/#/search?q=<b>{{NONCE}}</b>",
+                },
             ),
             False,
         ),
         (
             Candidate(
-                id="idor-defended",
+                id="idor-public-object",
                 target_name="juice",
                 vuln_class=VulnClass.IDOR,
-                title="Claimed IDOR on an admin-only resource that is enforced",
-                url=f"{base_url}/api/Users",
+                title="Claimed IDOR on an object that is actually public",
+                url=f"{base_url}/api/Products/2",
                 host="localhost",
                 params={
+                    # Products are world-readable. The owner sees the marker, but
+                    # so does an unauthenticated client -> the public-object guard
+                    # REJECTS this instead of false-positiving on shared data.
                     "login": login_spec,
-                    "victim_url": f"{base_url}/api/Users",
-                    "victim_marker": "totpSecret",
+                    "victim_url": f"{base_url}/api/Products/2",
+                    "victim_marker": victim_marker,
                 },
             ),
             False,
