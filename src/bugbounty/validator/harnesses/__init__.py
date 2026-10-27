@@ -17,4 +17,5 @@ def default_harnesses() -> dict[VulnClass, ProofHarness]:
         VulnClass.SSRF: HttpPocHarness(VulnClass.SSRF),
         VulnClass.AUTH: HttpPocHarness(VulnClass.AUTH),
         VulnClass.INJECTION: HttpPocHarness(VulnClass.INJECTION),
+        VulnClass.OTHER: HttpPocHarness(VulnClass.OTHER),
     }

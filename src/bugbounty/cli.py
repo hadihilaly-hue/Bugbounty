@@ -298,13 +298,19 @@ def report(db: str = "runs/bugbounty.db", out: str | None = None) -> None:
 
 
 @app.command(name="scan-code")
-def scan_code(path: str, config: str = "auto") -> None:
+def scan_code(
+    path: str,
+    config: list[str] = typer.Option(  # noqa: B008
+        None, "--config", help="Semgrep ruleset(s); repeat. Defaults to security packs."
+    ),
+) -> None:
     """Run Semgrep over your own code at PATH and list the signals."""
     from bugbounty.signal.base import SignalUnavailable
-    from bugbounty.signal.semgrep import run_semgrep
+    from bugbounty.signal.semgrep import DEFAULT_RULESETS, run_semgrep
 
+    rulesets = config or list(DEFAULT_RULESETS)
     try:
-        sigs = run_semgrep(path, config=config)
+        sigs = run_semgrep(path, config=rulesets)
     except SignalUnavailable as exc:
         console.print(f"[red]{exc}[/]")
         raise typer.Exit(2) from exc
@@ -338,6 +344,43 @@ def fp_benchmark(db: str | None = None) -> None:
         from bugbounty.orchestrator import Store
 
         Store(db).record_benchmark("fp-benchmark", metrics)
+        console.print(f"recorded to {db}")
+
+
+@app.command(name="juiceshop-eval")
+def juiceshop_eval(base_url: str = "http://localhost:3000", db: str | None = None) -> None:
+    """Expanded validator evaluation against a LOCAL Juice Shop sandbox."""
+    from urllib.parse import urlparse
+
+    from bugbounty.jobs.juiceshop_eval import run_eval
+
+    host = urlparse(base_url).hostname or ""
+    if host not in {"localhost", "127.0.0.1"}:
+        console.print(f"[red]refusing: {host} is not the local sandbox[/]")
+        raise typer.Exit(2)
+    m, m_sup, rows = run_eval(base_url)
+    table = Table(title="Juice Shop evaluation")
+    for col in ("candidate", "class", "category", "expected", "validator", "note"):
+        table.add_column(col)
+    for cid, cls, cat, vulnerable, status, note, _reason in rows:
+        table.add_row(cid, cls, cat, "vuln" if vulnerable else "safe", status, note)
+    console.print(table)
+    for cid, _cls, _cat, vulnerable, status, _note, reason in rows:
+        if vulnerable and status != "confirmed":
+            console.print(f"[yellow]MISS[/] {cid}: {status} -- {reason}")
+    console.print(
+        f"ALL ({m.tp + m.fp + m.tn + m.fn} cases): precision={m.precision:.2f} "
+        f"recall={m.recall:.2f} fp_rate={m.fp_rate:.2f} "
+        f"(tp={m.tp} fp={m.fp} tn={m.tn} fn={m.fn})"
+    )
+    console.print(
+        f"SUPPORTED-only: precision={m_sup.precision:.2f} recall={m_sup.recall:.2f} "
+        f"fp_rate={m_sup.fp_rate:.2f} (tp={m_sup.tp} fp={m_sup.fp} tn={m_sup.tn} fn={m_sup.fn})"
+    )
+    if db:
+        from bugbounty.orchestrator import Store
+
+        Store(db).record_benchmark("juiceshop-eval", m)
         console.print(f"recorded to {db}")
 
 
