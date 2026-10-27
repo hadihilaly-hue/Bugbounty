@@ -177,6 +177,45 @@ def bench_juiceshop(
     )
 
 
+@app.command(name="run-batch")
+def run_batch(
+    candidates_file: str,
+    allowlist: str = DEFAULT_ALLOWLIST,
+    db: str = "runs/bugbounty.db",
+    batch_id: str | None = None,
+    resume: bool = False,
+    kill_switch_file: str | None = None,
+) -> None:
+    """Validate a batch of candidates with persistence, budgets, and kill switch."""
+    import yaml
+
+    from bugbounty.orchestrator import CreditWindow, Orchestrator, Store
+    from bugbounty.validator import Candidate
+
+    cfg = load_config()
+    al = load_allowlist(allowlist)
+    data = yaml.safe_load(Path(candidates_file).read_text()) or {}
+    cands = [Candidate.model_validate(x) for x in (data.get("candidates") or [])]
+    orch = Orchestrator(
+        cfg,
+        Store(db),
+        credit=CreditWindow.from_env(),
+        kill_switch_file=kill_switch_file,
+    )
+    res = orch.run_batch(al, cands, batch_id=batch_id, resume=resume)
+    console.print(
+        f"batch [bold]{res.batch_id}[/]: "
+        f"[green]confirmed={res.confirmed}[/] rejected={res.rejected} "
+        f"unconfirmed={res.unconfirmed} out_of_scope={res.out_of_scope}"
+    )
+    for w in res.warnings:
+        console.print(f"[yellow]SPEND WARNING: {w}[/]")
+    if res.aborted:
+        console.print(f"[red]ABORTED: {res.reason}[/]")
+        raise typer.Exit(4)
+    console.print(f"persisted to {db}; {res.confirmed} finding(s) in the review queue")
+
+
 def _default_allowlist_exists() -> bool:
     return Path(DEFAULT_ALLOWLIST).exists()
 
