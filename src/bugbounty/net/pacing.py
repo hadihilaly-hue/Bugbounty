@@ -50,8 +50,8 @@ class _HostClock:
     def __init__(self, min_interval: float, jitter: float) -> None:
         self.min_interval = min_interval
         self.jitter = jitter
-        self._next: dict[str, float] = {}
-        self._strictest: dict[str, float] = {}
+        self._next: dict[str, float] = {}  # host cooldown deadline (see block())
+        self._last: dict[str, float] = {}  # last slot handed out for a host
         self._lock = threading.Lock()
 
     def acquire(
@@ -66,20 +66,26 @@ class _HostClock:
         """Wait until this host's next slot, then reserve the one after it.
 
         A pending cooldown (see :meth:`block`) is honoured even when pacing is
-        disabled, so a 429 still stops every caller for this host. Callers may
-        pass their own pacing; the strictest interval seen for a host wins, so
-        clients configured differently still share one budget for that host.
+        disabled, so a 429 still stops every caller for this host.
+
+        Every client shares one timeline per host (``_last``), and a request is
+        scheduled at ``last_request + its own interval``. With one pacing config
+        -- the normal case, since pacing comes from ``Config`` -- that is exactly
+        the configured per-host rate. With mixed configs each client still waits
+        its own interval after the previous *actual* request, so bursts stay
+        bounded, a stricter client waits in full from the first request, and no
+        interval is memoised to leak into a later run.
         """
         with self._lock:
             t = now()
             mi = self.min_interval if min_interval is None else min_interval
             ji = self.jitter if jitter is None else jitter
-            mi = max(mi, self._strictest.get(host, 0.0))
-            self._strictest[host] = mi
-            nxt = self._next.get(host, 0.0)
-            delay = max(0.0, nxt - t)
             interval = mi * (1.0 + random.uniform(0.0, max(0.0, ji))) if mi > 0 else 0.0
-            self._next[host] = max(t, nxt) + interval
+            cooldown = self._next.get(host, 0.0)  # 429 deadline, host-wide
+            earliest = self._last[host] + interval if host in self._last else t
+            slot = max(t, cooldown, earliest)
+            delay = slot - t
+            self._last[host] = slot
         if delay > 0:
             sleep(delay)
         return delay

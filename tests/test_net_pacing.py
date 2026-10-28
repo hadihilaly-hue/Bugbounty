@@ -6,6 +6,7 @@ import datetime as dt
 import email.utils
 
 import httpx
+import pytest
 
 from bugbounty.net.pacing import (
     PacedTransport,
@@ -140,17 +141,32 @@ def test_429_gives_up_after_max_retries():
     assert r.status_code == 429 and calls["n"] == 3 and len(sleeps) == 2
 
 
-def test_differently_paced_clients_share_one_host_budget():
-    """Mixed pacing settings must not hand each client its own slot for a host."""
-    clock = shared_clock()
-    t = [7000.0]
+def _acquire_seq(clock, host, specs, start=7000.0):
+    """Run acquires with the given intervals, returning the sleeps incurred."""
+    t = [start]
     sleeps: list[float] = []
 
     def sleep(d):
         sleeps.append(d)
         t[0] += d
 
-    # Strict client goes first (1 req/s), then a laxer one (10 req/s) for the same host.
-    clock.acquire("shared-host", min_interval=1.0, jitter=0.0, sleep=sleep, now=lambda: t[0])
-    clock.acquire("shared-host", min_interval=0.1, jitter=0.0, sleep=sleep, now=lambda: t[0])
-    assert sleeps == [1.0]  # the lax client still waits out the strictest interval
+    for mi in specs:
+        clock.acquire(host, min_interval=mi, jitter=0.0, sleep=sleep, now=lambda: t[0])
+    return sleeps
+
+
+def test_differently_paced_clients_share_one_host_timeline():
+    """Mixed pacing must not hand each client its own free slot for a host."""
+    # Lax client (10/s) first, then a strict one (1/s): the strict client waits
+    # its own full interval from the last request, not the lax client's slot.
+    assert _acquire_seq(shared_clock(), "mixed-a", [0.1, 1.0]) == pytest.approx([1.0])
+    # Strict first, then lax: the lax client is spaced off the same timeline.
+    assert _acquire_seq(shared_clock(), "mixed-b", [1.0, 0.1]) == pytest.approx([0.1])
+
+
+def test_host_interval_does_not_leak_into_a_later_run():
+    """A strict run must not permanently throttle a later, laxer run."""
+    clock = shared_clock()
+    assert _acquire_seq(clock, "later-run", [1.0]) == []
+    # A subsequent client with pacing disabled is spaced only by its own interval.
+    assert _acquire_seq(clock, "later-run", [0.0], start=9000.0) == []
