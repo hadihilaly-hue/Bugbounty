@@ -160,3 +160,36 @@ def test_recon_refuses_out_of_scope_redirect_via_real_allowlist(monkeypatch):
     rec = recon_http("http://app.example.com", scope=scope)
     assert hosts == ["app.example.com"]
     assert any("out-of-scope redirect" in n for n in rec.notes)
+
+
+def test_recon_refuses_scheme_downgrade_redirect(monkeypatch):
+    """An https page must not be bounced to http, even on an in-scope host."""
+    hosts: list[tuple[str, str]] = []
+
+    def handler(request):
+        hosts.append((request.url.scheme, request.url.host))
+        if request.url.scheme == "https":
+            return httpx.Response(302, headers={"location": "http://app.example.com/x"})
+        return httpx.Response(200, text="<html>plaintext, never fetched</html>")
+
+    _patch_client(monkeypatch, handler)
+    scope = lambda h: h == "app.example.com"  # noqa: E731
+    rec = recon_http("https://app.example.com", scope=scope)
+    assert hosts == [("https", "app.example.com")]  # the http hop is never made
+    assert any("scheme-downgrade redirect" in n for n in rec.notes)
+
+
+def test_recon_resolves_links_against_redirect_destination(monkeypatch):
+    """Endpoints from the landing page belong to the host that served it."""
+
+    def handler(request):
+        if request.url.host == "app.example.com":
+            return httpx.Response(302, headers={"location": "http://api.example.com/home"})
+        return httpx.Response(200, text='<html><a href="/orders">o</a></html>')
+
+    _patch_client(monkeypatch, handler)
+    scope = lambda h: h in {"app.example.com", "api.example.com"}  # noqa: E731
+    rec = recon_http("http://app.example.com", scope=scope)
+    assert "http://api.example.com/orders" in rec.endpoints
+    assert not any("app.example.com/orders" in e for e in rec.endpoints)
+    assert rec.base_url == "http://app.example.com"  # requested URL is preserved
