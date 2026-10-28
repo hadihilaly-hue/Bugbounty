@@ -37,6 +37,24 @@ class Validator:
             harnesses = default_harnesses()
         self.harnesses = harnesses
 
+    @staticmethod
+    def _guard(candidate: Candidate, result: ValidationResult) -> ValidationResult:
+        """Proof-integrity backstop: a CONFIRMED must come with proof.
+
+        Even a well-meaning harness bug must not be able to confirm a finding
+        without leaving a re-runnable artifact behind. A CONFIRMED that carries
+        neither evidence nor a PoC is not trusted -- it is downgraded to
+        UNCONFIRMED so it cannot reach the review queue on an empty claim.
+        """
+        if result.status is ValidationStatus.CONFIRMED and not (result.evidence or result.poc):
+            return _result(
+                candidate,
+                ValidationStatus.UNCONFIRMED,
+                "harness returned CONFIRMED without any proof artifact "
+                "(no evidence, no PoC); not trusted",
+            )
+        return result
+
     def validate(self, candidate: Candidate, target: Target) -> ValidationResult:
         harness = self.harnesses.get(candidate.vuln_class)
         if harness is None:
@@ -53,7 +71,8 @@ class Validator:
                 "switch); cannot execute a proof",
             )
         try:
-            return harness.run(candidate, target, self.config)
+            result = harness.run(candidate, target, self.config)
+            return self._guard(candidate, result)
         except HarnessUnavailable as exc:
             return _result(candidate, ValidationStatus.UNCONFIRMED, f"proof could not run: {exc}")
         except Exception as exc:  # noqa: BLE001 - adversarial: errors never confirm

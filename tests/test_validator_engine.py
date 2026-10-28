@@ -4,7 +4,7 @@ from bugbounty.config import Config
 from bugbounty.scope import Platform, Target
 from bugbounty.validator import Candidate, Validator, VulnClass
 from bugbounty.validator.base import HarnessUnavailable, ProofHarness
-from bugbounty.validator.models import ValidationResult, ValidationStatus
+from bugbounty.validator.models import Evidence, ValidationResult, ValidationStatus
 
 
 def _target(dry_run: bool) -> Target:
@@ -31,19 +31,26 @@ def _candidate(vc: VulnClass = VulnClass.XSS) -> Candidate:
 class _Harness(ProofHarness):
     vuln_class = VulnClass.XSS
 
-    def __init__(self, status=None, exc=None, active=True):
+    def __init__(self, status=None, exc=None, active=True, with_proof=True):
         self._status = status
         self._exc = exc
         self.sends_active_payload = active
+        self._with_proof = with_proof
 
     def run(self, candidate, target, config):
         if self._exc is not None:
             raise self._exc
+        # A real harness always leaves proof behind on CONFIRMED; the gating
+        # tests model that so the engine's proof-integrity guard is a no-op here.
+        evidence = (
+            [Evidence(kind="note", label="proof", content="fake")] if self._with_proof else []
+        )
         return ValidationResult(
             candidate_id=candidate.id,
             vuln_class=candidate.vuln_class,
             status=self._status,
             reason="fake",
+            evidence=evidence,
         )
 
 
@@ -101,3 +108,20 @@ def test_harness_unavailable_is_unconfirmed():
     r = v.validate(_candidate(), _target(dry_run=False))
     assert r.status is ValidationStatus.UNCONFIRMED
     assert "no creds" in r.reason
+
+
+def test_confirmed_without_proof_is_downgraded():
+    # A harness that claims CONFIRMED but leaves no evidence and no PoC must not
+    # reach the review queue -- the engine's integrity guard downgrades it.
+    v = _validator(_Harness(status=ValidationStatus.CONFIRMED, with_proof=False), dry_run=False)
+    r = v.validate(_candidate(), _target(dry_run=False))
+    assert r.status is ValidationStatus.UNCONFIRMED
+    assert "without any proof" in r.reason
+    assert r.in_review_queue is False
+
+
+def test_rejected_without_proof_is_not_touched():
+    # The guard only constrains CONFIRMED; a REJECTED with no artifacts is fine.
+    v = _validator(_Harness(status=ValidationStatus.REJECTED, with_proof=False), dry_run=False)
+    r = v.validate(_candidate(), _target(dry_run=False))
+    assert r.status is ValidationStatus.REJECTED
