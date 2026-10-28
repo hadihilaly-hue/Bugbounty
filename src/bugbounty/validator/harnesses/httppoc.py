@@ -361,6 +361,23 @@ class HttpPocHarness(ProofHarness):
             oracle = {**oracle, "token": oob_token}
             ctx["oob"] = oob_token
 
+        # Optional authenticated run: when the candidate opts in (an `account`
+        # label or `authenticated: true`) and the target carries creds, every
+        # request is sent with the account's origin-pinned session headers. The
+        # session may be a live one handed in via secrets (OAuth/SSO/MFA path).
+        session = None
+        want_auth = candidate.params.get("authenticated") or candidate.params.get("account")
+        if want_auth:
+            from ._sessions import build_account_session, origin_base
+
+            session = build_account_session(
+                target,
+                config,
+                candidate.params.get("account"),
+                base_url=origin_base(requests[0]["url"]),
+                transport=self._transport,
+            )
+
         steps: list[dict] = []
         evidence: list[Evidence] = []
         client_kw = {"timeout": 15.0, "follow_redirects": True}
@@ -370,15 +387,28 @@ class HttpPocHarness(ProofHarness):
             for i, raw in enumerate(requests):
                 req = _substitute(raw, ctx)
                 method = req.get("method", "GET").upper()
+                sess_headers = session.headers_for(req["url"]) if session else {}
+                merged_headers = {**sess_headers, **(req.get("headers") or {})}
                 _t0 = time.perf_counter()
                 resp = client.request(
                     method,
                     req["url"],
-                    headers=req.get("headers"),
+                    headers=merged_headers or None,
                     content=(req["body"] if isinstance(req.get("body"), str) else None),
                     json=(req["body"] if isinstance(req.get("body"), dict) else None),
                 )
                 elapsed = time.perf_counter() - _t0
+                if (
+                    session
+                    and session.is_manual
+                    and sess_headers
+                    and resp.status_code in (401, 403)
+                ):
+                    raise HarnessUnavailable(
+                        "handed-in session appears expired/invalid: authenticated "
+                        f"{method} {req['url']} returned {resp.status_code}; "
+                        "hand in a fresh session"
+                    )
                 resp_headers = dict(resp.headers)
                 captured: dict[str, str] = {}
                 for cap in raw.get("capture") or []:

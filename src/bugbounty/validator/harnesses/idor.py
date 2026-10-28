@@ -28,9 +28,17 @@ from typing import Any
 import yaml
 
 from ...config import Config
+from ...net import SessionManager
+from ...net.session import Account, _cookie_list_to_dict
 from ...scope import Target
 from ..base import HarnessUnavailable, ProofHarness
 from ..models import Candidate, Evidence, ValidationResult, ValidationStatus, VulnClass
+from ._sessions import origin_base
+
+
+def _is_manual(raw: dict) -> bool:
+    """A handed-in session account carries live cookies/bearer, not a password."""
+    return bool(raw.get("cookies") or raw.get("bearer_token"))
 
 
 def _load_accounts(target: Target) -> dict:
@@ -94,6 +102,35 @@ class IdorHarness(ProofHarness):
     def __init__(self, transport: Any | None = None) -> None:
         self._transport = transport  # httpx transport for deterministic tests
 
+    def _auth_for(
+        self, raw: dict, login: dict | None, victim_url: str, config: Config, client: Any
+    ) -> tuple[dict[str, str], tuple]:
+        """Auth headers for one account, plus an identity key for distinctness.
+
+        A handed-in (manual) account uses its live session, origin-pinned to the
+        victim URL via SessionManager (#11) so it is never sent off-origin. A
+        password account logs in via the candidate's login spec, as before.
+        """
+        if _is_manual(raw):
+            account = Account(
+                label="idor",
+                bearer_token=raw.get("bearer_token"),
+                cookies=_cookie_list_to_dict(raw.get("cookies")),
+            )
+            sm = SessionManager(config=config, base_url=origin_base(victim_url), client=client)
+            sm.authenticate(account)
+            headers = sm.headers_for(victim_url)
+            if not headers:
+                raise HarnessUnavailable(
+                    "handed-in session is not pinned to the victim origin; "
+                    "refusing to send it to a different host"
+                )
+            return headers, ("manual", tuple(sorted(headers.items())))
+        if not login:
+            raise HarnessUnavailable("candidate needs a 'login' spec for password accounts")
+        tok = self._login(client, login, raw)
+        return {"Authorization": f"Bearer {tok}"}, ("login", tok)
+
     def _login(self, client: Any, login: dict, account: dict) -> str:
         auth = client.request(
             login.get("method", "POST"),
@@ -128,8 +165,9 @@ class IdorHarness(ProofHarness):
         login = candidate.params.get("login")
         victim_url = candidate.params.get("victim_url")
         marker = candidate.params.get("victim_marker")
-        if not (login and victim_url and marker):
-            raise HarnessUnavailable("candidate needs login, victim_url, victim_marker params")
+        if not (victim_url and marker):
+            raise HarnessUnavailable("candidate needs victim_url and victim_marker params")
+        a_raw, b_raw = accounts["account_a"], accounts["account_b"]
 
         client_kw: dict[str, Any] = {"timeout": 15.0, "follow_redirects": True}
         if self._transport is not None:
@@ -137,11 +175,11 @@ class IdorHarness(ProofHarness):
 
         evidence: list[Evidence] = []
         with httpx.Client(**client_kw) as client:
-            tok_a = self._login(client, login, accounts["account_a"])
-            tok_b = self._login(client, login, accounts["account_b"])
-            if tok_a == tok_b:
+            headers_a, key_a = self._auth_for(a_raw, login, victim_url, config, client)
+            headers_b, key_b = self._auth_for(b_raw, login, victim_url, config, client)
+            if key_a == key_b:
                 raise HarnessUnavailable(
-                    "account_a and account_b resolved to the same session token; "
+                    "account_a and account_b resolved to the same session; "
                     "two distinct accounts are required for an IDOR proof"
                 )
 
@@ -156,9 +194,16 @@ class IdorHarness(ProofHarness):
                 )
                 return r
 
-            owner = _get("owner(B)", {"Authorization": f"Bearer {tok_b}"})
+            owner = _get("owner(B)", headers_b)
             public = _get("public(anon)", {})
-            attacker = _get("attacker(A)", {"Authorization": f"Bearer {tok_a}"})
+            attacker = _get("attacker(A)", headers_a)
+            # Surface an expired handed-in session rather than mislabelling it a
+            # patched endpoint: the owner must be able to read its own object.
+            if _is_manual(b_raw) and owner.status_code in (401, 403):
+                raise HarnessUnavailable(
+                    f"handed-in session for account_b appears expired/invalid "
+                    f"(owner GET -> {owner.status_code}); hand in a fresh session"
+                )
 
         status, reason = evaluate_idor(
             owner_sees_marker=(owner.status_code < 400 and marker in owner.text),

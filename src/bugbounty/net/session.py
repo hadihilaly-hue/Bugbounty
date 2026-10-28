@@ -34,6 +34,11 @@ class MfaRequired(Exception):
     out of band."""
 
 
+class SessionInvalid(AuthError):
+    """A handed-in session is expired/invalid. We surface this rather than
+    silently running unauthenticated, and (for manual sessions) never re-auth."""
+
+
 @dataclass
 class Account:
     label: str
@@ -41,11 +46,14 @@ class Account:
     password: str | None = None
     bearer_token: str | None = None
     cookies: dict[str, str] = field(default_factory=dict)
+    # Browser storage to seed for SPA targets that read their token/session from
+    # localStorage (e.g. Juice Shop's 'token'); carried into the XSS render only.
+    local_storage: dict[str, str] = field(default_factory=dict)
 
     @property
     def is_manual(self) -> bool:
         """True when a live session was handed in (skip the login request)."""
-        return bool(self.bearer_token or self.cookies)
+        return bool(self.bearer_token or self.cookies or self.local_storage)
 
 
 @dataclass
@@ -61,34 +69,35 @@ class Credentials:
         accounts: list[Account] = []
         shared_cookies = _cookie_list_to_dict(data.get("cookies"))
         shared_bearer = data.get("bearer_token")
+        shared_ls = dict(data.get("local_storage") or {})
+
+        def _mk(label: str, raw: dict) -> Account:
+            return Account(
+                label=label,
+                username=raw.get("username") or raw.get("email"),
+                password=raw.get("password"),
+                bearer_token=raw.get("bearer_token") or shared_bearer,
+                cookies=_cookie_list_to_dict(raw.get("cookies")) or dict(shared_cookies),
+                local_storage={str(k): str(v) for k, v in (raw.get("local_storage") or {}).items()}
+                or dict(shared_ls),
+            )
+
         if isinstance(data.get("accounts"), list):
             for i, raw in enumerate(data["accounts"]):
-                accounts.append(
-                    Account(
-                        label=str(raw.get("label") or f"account_{i}"),
-                        username=raw.get("username") or raw.get("email"),
-                        password=raw.get("password"),
-                        bearer_token=raw.get("bearer_token") or shared_bearer,
-                        cookies=_cookie_list_to_dict(raw.get("cookies")) or dict(shared_cookies),
-                    )
-                )
+                accounts.append(_mk(str(raw.get("label") or f"account_{i}"), raw))
         else:
             # account_a / account_b dict form (used by the eval adapters)
             for label, raw in data.items():
-                if not isinstance(raw, dict):
-                    continue
-                accounts.append(
-                    Account(
-                        label=label,
-                        username=raw.get("username") or raw.get("email"),
-                        password=raw.get("password"),
-                        bearer_token=raw.get("bearer_token") or shared_bearer,
-                        cookies=_cookie_list_to_dict(raw.get("cookies")) or dict(shared_cookies),
-                    )
-                )
-        if not accounts and (shared_cookies or shared_bearer):
+                if isinstance(raw, dict):
+                    accounts.append(_mk(label, raw))
+        if not accounts and (shared_cookies or shared_bearer or shared_ls):
             accounts.append(
-                Account(label="account_0", bearer_token=shared_bearer, cookies=dict(shared_cookies))
+                Account(
+                    label="account_0",
+                    bearer_token=shared_bearer,
+                    cookies=dict(shared_cookies),
+                    local_storage=dict(shared_ls),
+                )
             )
         return cls(accounts=accounts)
 
@@ -197,6 +206,58 @@ class SessionManager:
         if self.bearer:
             headers["Authorization"] = f"Bearer {self.bearer}"
         return headers
+
+    def headers_for(self, url: str) -> dict[str, str]:
+        """Public: origin-pinned auth headers for ``url`` (see _auth_headers_for).
+
+        The session's cookie/bearer is returned only when ``url`` is this
+        session's own origin (scheme+host+port); any other host gets ``{}``.
+        """
+        return self._auth_headers_for(url)
+
+    @property
+    def is_manual(self) -> bool:
+        """True when this session was handed in (no login request was made)."""
+        return bool(self._account and self._account.is_manual)
+
+    @property
+    def local_storage(self) -> dict[str, str]:
+        """localStorage to seed in a browser for this session (SPA token apps)."""
+        return dict(self._account.local_storage) if self._account else {}
+
+    def browser_cookies(self, url: str) -> list[dict]:
+        """Playwright-style cookie dicts for ``url``, only if it is this session's
+        pinned origin (so the browser never carries the session off-origin).
+
+        Scoped by ``url`` (origin), which is robust for IPs/localhost where a
+        bare ``domain`` is rejected; the browser keeps them on that origin."""
+        req, own = self._origin(url), self._session_origin()
+        if req is not None and own is not None and req != own:
+            return []
+        u = httpx.URL(url)
+        base = f"{u.scheme}://{u.host}" + (f":{u.port}" if u.port else "")
+        return [{"name": k, "value": v, "url": base} for k, v in self.cookies.items() if u.host]
+
+    def check_live(self, probe_url: str, *, marker: str | None = None) -> httpx.Response:
+        """Probe that a (typically handed-in) session is still valid.
+
+        Raises :class:`SessionInvalid` on an expiry signal, a 401/403, or a
+        missing success marker -- so an expired handed-in session is surfaced
+        loudly instead of running unauthenticated and reporting nothing.
+        """
+        resp = self.request("GET", probe_url, _allow_reauth=False)
+        bad = (
+            self._expired(resp)
+            or resp.status_code in (401, 403)
+            or (marker is not None and marker not in resp.text)
+        )
+        if bad:
+            raise SessionInvalid(
+                f"session for {self._account.label if self._account else '?'!r} is "
+                f"expired/invalid against {probe_url} (HTTP {resp.status_code}); "
+                "hand in a fresh session"
+            )
+        return resp
 
     def cookie_header(self) -> str:
         return "; ".join(f"{k}={v}" for k, v in self.cookies.items())
