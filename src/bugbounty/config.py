@@ -74,6 +74,17 @@ class Config:
     requests_per_second: float = field(
         default_factory=lambda: _env_float("BB_REQUESTS_PER_SECOND", 2.0)
     )
+    # Per-host politeness: pace requests to a single target and back off on 429.
+    # Conservative defaults so we never hammer one host even with concurrency.
+    per_host_rps: float = field(default_factory=lambda: _env_float("BB_PER_HOST_RPS", 1.0))
+    pacing_jitter: float = field(default_factory=lambda: _env_float("BB_PACING_JITTER", 0.1))
+    max_retries_429: int = field(default_factory=lambda: _env_int("BB_MAX_RETRIES_429", 4))
+    backoff_base_seconds: float = field(
+        default_factory=lambda: _env_float("BB_BACKOFF_BASE_SECONDS", 0.5)
+    )
+    backoff_max_seconds: float = field(
+        default_factory=lambda: _env_float("BB_BACKOFF_MAX_SECONDS", 30.0)
+    )
     budget: BudgetCaps = field(default_factory=BudgetCaps)
 
     def active_payloads_allowed(self, target_dry_run: bool) -> bool:

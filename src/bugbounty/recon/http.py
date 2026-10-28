@@ -12,6 +12,8 @@ from dataclasses import dataclass, field
 from html.parser import HTMLParser
 from urllib.parse import urljoin, urlparse
 
+import httpx
+
 _API_PATH_RE = re.compile(r"/(?:api|rest)/[A-Za-z0-9_\-/]+")
 _PARAM_RE = re.compile(r"[?&]([A-Za-z0-9_]+)=")
 
@@ -58,13 +60,48 @@ def extract_api_paths(text: str) -> list[str]:
     return sorted({m.group(0) for m in _API_PATH_RE.finditer(text)})
 
 
-def recon_http(base_url: str, timeout: float = 15.0, max_js: int = 10) -> Recon:
-    import httpx
+_MAX_REDIRECTS = 5
+
+
+def _origin(url: str) -> tuple[str, str, int]:
+    u = httpx.URL(url)
+    return (u.scheme, u.host or "", u.port or (443 if u.scheme == "https" else 80))
+
+
+def _get_same_origin(client, url: str, rec: Recon):
+    """GET *url*, following redirects only while they stay on its own origin.
+
+    Fail closed: an in-scope page that redirects off-host must not make recon
+    contact a host outside the authorized target, so we stop and record it
+    instead of following.
+    """
+    origin = _origin(url)
+    current = url
+    for _ in range(_MAX_REDIRECTS + 1):
+        resp = client.get(current)
+        if not resp.is_redirect:
+            return resp
+        location = resp.headers.get("location")
+        if not location:
+            return resp
+        nxt = str(httpx.URL(current).join(location))
+        if _origin(nxt) != origin:
+            rec.notes.append(f"stopped at off-origin redirect: {current} -> {nxt}")
+            return resp
+        current = nxt
+    rec.notes.append(f"too many redirects from {url}")
+    return resp
+
+
+def recon_http(base_url: str, timeout: float = 15.0, max_js: int = 10, config=None) -> Recon:
+    # Paced per host so recon (which runs even in DRY_RUN) never hammers a target.
+    from ..net import build_client
 
     rec = Recon(base_url=base_url)
-    with httpx.Client(timeout=timeout, follow_redirects=True) as client:
+    # follow_redirects=False: redirects are vetted per hop against the origin.
+    with build_client(config, timeout=timeout, follow_redirects=False) as client:
         try:
-            resp = client.get(base_url)
+            resp = _get_same_origin(client, base_url, rec)
         except Exception as exc:  # noqa: BLE001 - recon failure is non-fatal
             rec.notes.append(f"base fetch failed: {exc}")
             return rec
@@ -78,7 +115,10 @@ def recon_http(base_url: str, timeout: float = 15.0, max_js: int = 10) -> Recon:
         api: set[str] = set()
         for js in rec.js_bundles:
             try:
-                api.update(urljoin(base_url, p) for p in extract_api_paths(client.get(js).text))
+                api.update(
+                    urljoin(base_url, p)
+                    for p in extract_api_paths(_get_same_origin(client, js, rec).text)
+                )
             except Exception:  # noqa: BLE001 - skip a bad bundle
                 continue
         rec.endpoints.extend(sorted(api))

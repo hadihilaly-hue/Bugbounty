@@ -1,9 +1,11 @@
 """DVWA adapter: graded against a local DVWA fixed at 'low' security.
 
-Known planted bugs (DVWA security=low) with documented oracles. We log in, set
-security=low, and replay HTTP proofs through the generic HTTP harness. Reflected
-XSS is graded as HTTP reflection (payload echoed unescaped) -- a weaker bar than
-the browser-execution XSS harness, and flagged as such.
+Known planted bugs (DVWA security=low) with documented oracles. Authentication
+goes through the shared SessionManager (CSRF form login + cookie session held
+across the DB-init and security-level steps), demonstrating live session
+handling against a CSRF-protected app. Reflected XSS is graded as HTTP
+reflection (payload echoed unescaped) -- a weaker bar than the browser-execution
+XSS harness, and flagged as such.
 
 Local sandbox only; sends real payloads, so the dry-run gate is cleared for this
 local target (global DRY_RUN stays on).
@@ -11,13 +13,12 @@ local target (global DRY_RUN stays on).
 
 from __future__ import annotations
 
-import re
 from urllib.parse import urlencode
 
-import httpx
-
 from ...config import Config
-from ...scope import Platform, Target, TargetAuth
+from ...net import AuthError, SessionManager
+from ...net.session import Account, extract_csrf
+from ...scope import LoginSpec, Platform, Target, TargetAuth
 from ...validator.engine import Validator
 from ...validator.models import Candidate, VulnClass
 from .base import EvalCase, EvalResult, EvalTarget, grade
@@ -40,79 +41,53 @@ class DvwaTarget(EvalTarget):
             'docker exec dvwa mysql -u root -e "CREATE DATABASE IF NOT EXISTS dvwa; '
             "CREATE USER IF NOT EXISTS 'dvwa'@'127.0.0.1' IDENTIFIED BY 'p@ssw0rd'; "
             "GRANT ALL ON dvwa.* TO 'dvwa'@'127.0.0.1'; FLUSH PRIVILEGES;\"\n"
-            "# the adapter then logs in admin/password, runs setup.php create-db, "
+            "# the adapter then logs in admin/password (CSRF), runs setup.php create-db, "
             "and sets DVWA Security = Low automatically"
         )
 
-    def _authenticate(self) -> str | None:
-        """Log in, ensure the DB exists, set security=low; return a Cookie header."""
+    def _login_spec(self) -> LoginSpec:
+        b = self.base_url
+        return LoginSpec(
+            mode="form",
+            url=f"{b}/login.php",
+            csrf_field="user_token",
+            extra_fields={"Login": "Login"},
+            user_field="username",
+            pass_field="password",
+            success_url=f"{b}/index.php",
+            success_marker="Logout",
+            expiry_marker="Login :: Damn Vulnerable Web Application",
+        )
 
-        def last_sid(resp) -> str | None:
-            sids = [
-                v.split(";")[0].split("=", 1)[1]
-                for k, v in resp.headers.multi_items()
-                if k.lower() == "set-cookie" and v.startswith("PHPSESSID=")
-            ]
-            return sids[-1] if sids else None
-
-        def tok(text: str) -> str | None:
-            m = re.search(r"user_token['\"]\s+value=['\"]([0-9a-f]{32})", text)
-            return m.group(1) if m else None
-
-        def ck(sid: str) -> dict:
-            return {"Cookie": f"PHPSESSID={sid}"}
-
+    def _authenticate(self, config: Config) -> str:
+        """Hold a CSRF-protected cookie session; init the DB if needed; set low."""
+        b = self.base_url
+        sm = SessionManager(self._login_spec(), config=config, base_url=b)
+        acct = Account("admin", "admin", "password")
         try:
-            cl = httpx.Client(base_url=self.base_url, timeout=20.0, follow_redirects=False)
-            r = cl.get("/login.php")
-            sid, t = last_sid(r), tok(r.text)
-            if not (sid and t):
-                return None
-            r = cl.post(
-                "/login.php",
-                data={
-                    "username": "admin",
-                    "password": "password",
-                    "Login": "Login",
-                    "user_token": t,
-                },
-                headers=ck(sid),
+            sm.authenticate(acct)
+        except AuthError:
+            # DB not initialised yet: create it on the held session, then retry.
+            page = sm.request("GET", f"{b}/setup.php")
+            tok = extract_csrf(page.text, "user_token")
+            if tok:
+                sm.request(
+                    "POST",
+                    f"{b}/setup.php",
+                    data={"create_db": "Create / Reset Database", "user_token": tok},
+                )
+            sm.authenticate(acct)
+        # Force DVWA Security = Low (page-specific CSRF token).
+        page = sm.request("GET", f"{b}/security.php")
+        tok = extract_csrf(page.text, "user_token")
+        if tok:
+            sm.request(
+                "POST",
+                f"{b}/security.php",
+                data={"security": "low", "seclev_submit": "Submit", "user_token": tok},
             )
-            sid = last_sid(r) or sid
-            if "Logout" not in cl.get("/index.php", headers=ck(sid)).text:
-                # DB not initialised yet: create it, then log in again.
-                st = tok(cl.get("/setup.php", headers=ck(sid)).text)
-                if st:
-                    cl.post(
-                        "/setup.php",
-                        data={"create_db": "Create / Reset Database", "user_token": st},
-                        headers=ck(sid),
-                    )
-                r = cl.get("/login.php")
-                sid, t = last_sid(r) or sid, tok(r.text)
-                r = cl.post(
-                    "/login.php",
-                    data={
-                        "username": "admin",
-                        "password": "password",
-                        "Login": "Login",
-                        "user_token": t,
-                    },
-                    headers=ck(sid),
-                )
-                sid = last_sid(r) or sid
-                if "Logout" not in cl.get("/index.php", headers=ck(sid)).text:
-                    return None
-            st = tok(cl.get("/security.php", headers=ck(sid)).text)
-            if st:
-                cl.post(
-                    "/security.php",
-                    data={"security": "low", "seclev_submit": "Submit", "user_token": st},
-                    headers=ck(sid),
-                )
-            return f"PHPSESSID={sid}; security=low"
-        except Exception:  # noqa: BLE001 - any failure means "could not authenticate"
-            return None
+        sm.cookies["security"] = "low"
+        return sm.cookie_header()
 
     def _cases(self, cookie: str) -> list[EvalCase]:
         b = self.base_url
@@ -249,17 +224,20 @@ class DvwaTarget(EvalTarget):
             return EvalResult(
                 self.name, False, note="DVWA not reachable at :4280; run docker_setup"
             )
-        cookie = self._authenticate()
-        if not cookie:
-            return EvalResult(self.name, False, note="DVWA login/DB-setup failed; see docker_setup")
         config = config or Config(dry_run=False)
+        try:
+            cookie = self._authenticate(config)
+        except Exception as exc:  # noqa: BLE001 - any auth failure -> unavailable, never fake
+            return EvalResult(
+                self.name, False, note=f"DVWA login/DB-setup failed: {exc}; see docker_setup"
+            )
         target = Target(
             name="dvwa",
             platform=Platform.SELF,
             safe_harbor_url="https://github.com/digininja/DVWA",
             in_scope=["localhost", "127.0.0.1"],
             dry_run=False,
-            auth=TargetAuth(),
+            auth=TargetAuth(login=self._login_spec()),
         )
         m, ms, rows = grade(self._cases(cookie), Validator(config), target)
         return EvalResult(self.name, True, m, ms, rows)

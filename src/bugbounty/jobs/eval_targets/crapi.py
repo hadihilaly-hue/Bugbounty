@@ -14,10 +14,10 @@ from __future__ import annotations
 import uuid
 from pathlib import Path
 
-import httpx
 import yaml
 
 from ...config import Config
+from ...net import build_client
 from ...scope import Platform, Target, TargetAuth
 from ...validator.engine import Validator
 from ...validator.models import Candidate, VulnClass
@@ -41,14 +41,14 @@ class CrapiTarget(EvalTarget):
             "# gateway/web on http://localhost:8888 ; seeded demo data loads on startup"
         )
 
-    def _accounts(self) -> dict | None:
+    def _accounts(self, config: Config) -> dict | None:
         sfx = uuid.uuid4().hex[:6]
         accts = {
             "account_a": {"email": f"bench_a_{sfx}@example.com", "password": _PW},
             "account_b": {"email": f"bench_b_{sfx}@example.com", "password": _PW},
         }
         try:
-            with httpx.Client(base_url=self.base_url, timeout=30.0) as c:
+            with build_client(config, base_url=self.base_url, timeout=30.0) as c:
                 for i, key in enumerate(("account_a", "account_b")):
                     c.post(
                         "/identity/api/auth/signup",
@@ -150,14 +150,14 @@ class CrapiTarget(EvalTarget):
             return EvalResult(
                 self.name, False, note="crAPI not reachable at :8888; run docker_setup"
             )
-        accts = self._accounts()
+        config = config or Config(dry_run=False)  # local sandbox: clear the gate here only
+        accts = self._accounts(config)
         if accts is None:
             return EvalResult(
                 self.name, False, note="crAPI signup/login failed; stack may still be seeding"
             )
         Path(_CREDS).parent.mkdir(parents=True, exist_ok=True)
         Path(_CREDS).write_text(yaml.safe_dump(accts))
-        config = config or Config(dry_run=False)
         target = Target(
             name="crapi",
             platform=Platform.SELF,
