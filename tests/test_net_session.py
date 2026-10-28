@@ -251,3 +251,64 @@ def test_session_is_not_leaked_to_another_host():
     assert seen["target"]["authorization"] == "Bearer tok"
     assert "cookie" not in seen["evil.example"]
     assert "authorization" not in seen["evil.example"]
+
+
+def test_declared_mfa_is_not_softened_by_a_response_marker():
+    """An explicit declaration wins even when response detection is configured."""
+    sent: list[str] = []
+
+    def handler(request):
+        sent.append(str(request.url))
+        return httpx.Response(200, text="ok")
+
+    auth = TargetAuth(
+        mfa_required=True,
+        login=LoginSpec(mode="form", url="http://t/login", mfa_marker="OTP"),
+    )
+    sm = SessionManager.from_auth(auth, client=httpx.Client(transport=httpx.MockTransport(handler)))
+    with pytest.raises(MfaRequired):
+        sm.authenticate(Account("a", "u", "p"))
+    assert sent == []
+
+
+def test_session_is_scoped_to_port_and_scheme():
+    """A different service on the same host must not receive the session."""
+    seen: dict[str, dict] = {}
+
+    def handler(request):
+        seen[f"{request.url.scheme}://{request.url.host}:{request.url.port}"] = dict(
+            request.headers
+        )
+        return httpx.Response(200, text="ok")
+
+    sm = SessionManager(
+        LoginSpec(mode="manual"),
+        base_url="http://target:8080",
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    sm.authenticate(Account("a", cookies={"session": "secret"}))
+    sm.request("GET", "http://target:8080/me")
+    sm.request("GET", "http://target:9999/other-service")
+    sm.request("GET", "https://target:8080/tls")
+    assert seen["http://target:8080"]["cookie"] == "session=secret"
+    assert "cookie" not in seen["http://target:9999"]
+    assert "cookie" not in seen["https://target:8080"]
+
+
+def test_unconfigured_session_pins_to_first_origin_then_refuses_others():
+    """A handed-in cookie with no base_url must not be sprayed at every host."""
+    seen: dict[str, dict] = {}
+
+    def handler(request):
+        seen[request.url.host] = dict(request.headers)
+        return httpx.Response(200, text="ok")
+
+    sm = SessionManager(
+        LoginSpec(mode="manual"),
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    sm.authenticate(Account("a", cookies={"session": "secret"}))
+    sm.request("GET", "http://first.example/a")
+    sm.request("GET", "http://second.example/b")
+    assert seen["first.example"]["cookie"] == "session=secret"
+    assert "cookie" not in seen["second.example"]

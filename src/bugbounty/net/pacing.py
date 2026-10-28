@@ -51,23 +51,34 @@ class _HostClock:
         self.min_interval = min_interval
         self.jitter = jitter
         self._next: dict[str, float] = {}
+        self._strictest: dict[str, float] = {}
         self._lock = threading.Lock()
 
-    def acquire(self, host: str, *, sleep=time.sleep, now=time.monotonic) -> float:
+    def acquire(
+        self,
+        host: str,
+        *,
+        min_interval: float | None = None,
+        jitter: float | None = None,
+        sleep=time.sleep,
+        now=time.monotonic,
+    ) -> float:
         """Wait until this host's next slot, then reserve the one after it.
 
         A pending cooldown (see :meth:`block`) is honoured even when pacing is
-        disabled, so a 429 still stops every caller for this host.
+        disabled, so a 429 still stops every caller for this host. Callers may
+        pass their own pacing; the strictest interval seen for a host wins, so
+        clients configured differently still share one budget for that host.
         """
         with self._lock:
             t = now()
+            mi = self.min_interval if min_interval is None else min_interval
+            ji = self.jitter if jitter is None else jitter
+            mi = max(mi, self._strictest.get(host, 0.0))
+            self._strictest[host] = mi
             nxt = self._next.get(host, 0.0)
             delay = max(0.0, nxt - t)
-            interval = (
-                self.min_interval * (1.0 + random.uniform(0.0, max(0.0, self.jitter)))
-                if self.min_interval > 0
-                else 0.0
-            )
+            interval = mi * (1.0 + random.uniform(0.0, max(0.0, ji))) if mi > 0 else 0.0
             self._next[host] = max(t, nxt) + interval
         if delay > 0:
             sleep(delay)
@@ -81,20 +92,14 @@ class _HostClock:
             self._next[host] = max(self._next.get(host, 0.0), now() + seconds)
 
 
-# One clock per pacing setting, shared process-wide: separate clients built for
-# the same host in a run must not each get their own budget of requests/second.
-_SHARED_CLOCKS: dict[tuple[float, float], _HostClock] = {}
-_SHARED_CLOCKS_LOCK = threading.Lock()
+# ONE clock process-wide, regardless of pacing settings: every client that talks
+# to a host must draw on the same requests/second budget for it. Per-call pacing
+# is passed to acquire(), where the strictest interval for that host wins.
+_SHARED_CLOCK = _HostClock(min_interval=0.0, jitter=0.0)
 
 
-def shared_clock(pacing: PacingConfig) -> _HostClock:
-    key = (pacing.min_interval, pacing.jitter)
-    with _SHARED_CLOCKS_LOCK:
-        clock = _SHARED_CLOCKS.get(key)
-        if clock is None:
-            clock = _HostClock(pacing.min_interval, pacing.jitter)
-            _SHARED_CLOCKS[key] = clock
-        return clock
+def shared_clock(pacing: PacingConfig | None = None) -> _HostClock:
+    return _SHARED_CLOCK
 
 
 def retry_after_seconds(value: str | None) -> float | None:
@@ -139,7 +144,13 @@ class PacedTransport(httpx.BaseTransport):
         host = request.url.host or ""
         attempt = 0
         while True:
-            self._clock.acquire(host, sleep=self._sleep, now=self._now)
+            self._clock.acquire(
+                host,
+                min_interval=self._pacing.min_interval,
+                jitter=self._pacing.jitter,
+                sleep=self._sleep,
+                now=self._now,
+            )
             resp = self._inner.handle_request(request)
             if resp.status_code != 429:
                 return resp

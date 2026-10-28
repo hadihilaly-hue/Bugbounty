@@ -138,3 +138,19 @@ def test_429_gives_up_after_max_retries():
     client, sleeps = _client(handler, max_retries_429=2, backoff_base=0.5)
     r = client.get("http://h/x")
     assert r.status_code == 429 and calls["n"] == 3 and len(sleeps) == 2
+
+
+def test_differently_paced_clients_share_one_host_budget():
+    """Mixed pacing settings must not hand each client its own slot for a host."""
+    clock = shared_clock()
+    t = [7000.0]
+    sleeps: list[float] = []
+
+    def sleep(d):
+        sleeps.append(d)
+        t[0] += d
+
+    # Strict client goes first (1 req/s), then a laxer one (10 req/s) for the same host.
+    clock.acquire("shared-host", min_interval=1.0, jitter=0.0, sleep=sleep, now=lambda: t[0])
+    clock.acquire("shared-host", min_interval=0.1, jitter=0.0, sleep=sleep, now=lambda: t[0])
+    assert sleeps == [1.0]  # the lax client still waits out the strictest interval

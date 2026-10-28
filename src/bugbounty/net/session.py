@@ -149,6 +149,7 @@ class SessionManager:
         self.config = config or Config()
         self.base_url = base_url
         self._mfa_required = mfa_required
+        self._pinned_origin: tuple[str, str, int] | None = None
         # follow_redirects=False so we can read Set-Cookie and spot login bounces.
         self.client = client or build_client(self.config, base_url=base_url, follow_redirects=False)
         self.cookies: dict[str, str] = {}
@@ -174,7 +175,10 @@ class SessionManager:
                 f"login.mode is 'manual' but no live session was supplied for "
                 f"{account.label!r}; put cookies/bearer_token in the target's secrets file"
             )
-        if self.login.mfa_marker is None and self.login.mfa_status is None and self._mfa_declared():
+        if self._mfa_declared():
+            # An explicit declaration is final: response-based detection (marker /
+            # status) is for targets whose MFA requirement is unknown, and never
+            # softens a declaration.
             raise MfaRequired(
                 f"target declares MFA for {account.label!r}; hand in a live cookie/bearer "
                 "in secrets (cookies/bearer_token) or solve MFA out of band"
@@ -197,21 +201,38 @@ class SessionManager:
     def cookie_header(self) -> str:
         return "; ".join(f"{k}={v}" for k, v in self.cookies.items())
 
-    def _session_host(self) -> str | None:
+    @staticmethod
+    def _origin(url: str) -> tuple[str, str, int] | None:
+        """(scheme, host, port) for an absolute URL; None for a relative path."""
+        u = httpx.URL(url)
+        if not u.host:
+            return None
+        return (u.scheme, u.host, u.port or (443 if u.scheme == "https" else 80))
+
+    def _session_origin(self) -> tuple[str, str, int] | None:
         for src in (self.base_url, self.login.url, self.login.success_url):
             if src:
-                host = httpx.URL(src).host
-                if host:
-                    return host
-        return None
+                origin = self._origin(src)
+                if origin:
+                    return origin
+        return self._pinned_origin
 
     def _auth_headers_for(self, url: str) -> dict[str, str]:
-        """Never hand this session's cookie/bearer to a different host."""
-        req_host = httpx.URL(url).host  # empty for paths resolved against base_url
-        own = self._session_host()
-        if req_host and own and req_host != own:
-            return {}
-        return self.auth_headers()
+        """Only ever hand this session's cookie/bearer to its own origin.
+
+        Scheme and port are part of the origin, so a different service on the
+        same host (or a plain-HTTP downgrade) never sees the session. When no
+        origin is configured (e.g. a handed-in cookie with no base_url) the first
+        absolute URL used pins it, and everything else is refused.
+        """
+        req = self._origin(url)  # None => relative path, resolved against base_url
+        if req is None:
+            return self.auth_headers()
+        own = self._session_origin()
+        if own is None:
+            self._pinned_origin = req
+            return self.auth_headers()
+        return {} if req != own else self.auth_headers()
 
     def request(
         self, method: str, url: str, *, _allow_reauth: bool = True, headers=None, **kw
