@@ -17,6 +17,10 @@ Oracle strictness is the whole point: a "confirmed" must mean confirmed.
   the request is expected to make the target call back to a collaborator, and
   the oracle asks an injected :class:`OobListener` whether *that* token was
   seen. No listener configured => UNCONFIRMED (we never guess an OOB hit).
+- ``timing`` -- blind/time-based injection with no visible output: a baseline
+  request and an injected (e.g. ``SLEEP(5)``) request are both timed, and the
+  bug is confirmed only when the injected response is slower by a strict
+  margin. Deliberately conservative so normal latency jitter cannot confirm it.
 
 I/O is injectable (``transport`` / ``oob``) so the decision logic can be tested
 deterministically without a live network or collaborator.
@@ -29,6 +33,8 @@ import binascii
 import json
 import re
 import shlex
+import statistics
+import time
 from typing import Any, Protocol
 
 from ...config import Config
@@ -170,12 +176,33 @@ def _select_step(oracle: dict, steps: list[dict]) -> dict:
     raise HarnessUnavailable(f"oracle 'on' references unknown step {on!r}")
 
 
+def _timing_samples(steps: list[dict], name: str) -> list[float]:
+    """Elapsed times of every step with this name (supports repeated sampling)."""
+    return [s["elapsed"] for s in steps if s.get("name") == name and "elapsed" in s]
+
+
+def evaluate_timing(baseline: list[float], inject: list[float], min_delta_seconds: float) -> bool:
+    """Blind time-based oracle: did the injected request run measurably slower?
+
+    Strict against jitter: the injected median must beat the baseline median by
+    at least ``min_delta_seconds``, the injected median must itself be at least
+    ``min_delta_seconds`` (a sub-threshold blip can't confirm a claim that
+    relies on an N-second sleep), and -- when several samples are taken -- every
+    injected sample must be slower than every baseline sample. Pair it with a
+    large sleep (e.g. ``SLEEP(5)``) and several samples for real confidence.
+    """
+    if not baseline or not inject:
+        raise HarnessUnavailable("timing oracle needs >=1 baseline and >=1 inject sample")
+    b, i = statistics.median(baseline), statistics.median(inject)
+    return (i - b) >= min_delta_seconds and i >= min_delta_seconds and min(inject) > max(baseline)
+
+
 def evaluate_oracle(oracle: dict, steps: list[dict], oob: OobListener | None = None) -> bool:
     """Decide whether the oracle proves the bug against the recorded ``steps``.
 
     ``steps`` is the list of per-request records:
-    ``{name, status, headers, body, captured}``. Pure except for the optional
-    OOB listener (whose job is to report a real external interaction).
+    ``{name, status, headers, body, captured, elapsed}``. Pure except for the
+    optional OOB listener (whose job is to report a real external interaction).
     """
     if not steps:
         raise HarnessUnavailable("no requests were executed")
@@ -188,6 +215,13 @@ def evaluate_oracle(oracle: dict, steps: list[dict], oob: OobListener | None = N
         if not token:
             raise HarnessUnavailable("oob oracle missing minted token")
         return bool(oob.received(token))
+
+    if kind == "timing":
+        if "baseline" not in oracle or "inject" not in oracle:
+            raise HarnessUnavailable("timing oracle needs 'baseline' and 'inject' step names")
+        base = _timing_samples(steps, oracle["baseline"])
+        inj = _timing_samples(steps, oracle["inject"])
+        return evaluate_timing(base, inj, float(oracle.get("min_delta_seconds", 3.0)))
 
     step = _select_step(oracle, steps)
     status, body = step["status"], step.get("body", "")
@@ -336,6 +370,7 @@ class HttpPocHarness(ProofHarness):
             for i, raw in enumerate(requests):
                 req = _substitute(raw, ctx)
                 method = req.get("method", "GET").upper()
+                _t0 = time.perf_counter()
                 resp = client.request(
                     method,
                     req["url"],
@@ -343,6 +378,7 @@ class HttpPocHarness(ProofHarness):
                     content=(req["body"] if isinstance(req.get("body"), str) else None),
                     json=(req["body"] if isinstance(req.get("body"), dict) else None),
                 )
+                elapsed = time.perf_counter() - _t0
                 resp_headers = dict(resp.headers)
                 captured: dict[str, str] = {}
                 for cap in raw.get("capture") or []:
@@ -356,6 +392,7 @@ class HttpPocHarness(ProofHarness):
                         "headers": resp_headers,
                         "body": resp.text,
                         "captured": captured,
+                        "elapsed": elapsed,
                     }
                 )
                 evidence.append(

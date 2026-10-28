@@ -145,6 +145,45 @@ class DvwaTarget(EvalTarget):
         union = (
             "/vulnerabilities/sqli/?id='+UNION+SELECT+user,password+FROM+users--+-&Submit=Submit"
         )
+
+        def timing(cid, title, inj_id, vuln, note):
+            blind = f"{b}/vulnerabilities/sqli_blind/"
+            return EvalCase(
+                Candidate(
+                    id=cid,
+                    target_name="dvwa",
+                    vuln_class=VulnClass.INJECTION,
+                    title=title,
+                    url=blind,
+                    host="localhost",
+                    params={
+                        "requests": [
+                            {
+                                "name": "base",
+                                "method": "GET",
+                                "url": f"{blind}?id=1&Submit=Submit",
+                                "headers": hdr,
+                            },
+                            {
+                                "name": "inj",
+                                "method": "GET",
+                                "url": f"{blind}?id={inj_id}&Submit=Submit",
+                                "headers": hdr,
+                            },
+                        ],
+                        "oracle": {
+                            "type": "timing",
+                            "baseline": "base",
+                            "inject": "inj",
+                            "min_delta_seconds": 2.0,
+                        },
+                    },
+                ),
+                vuln,
+                "supported",
+                note,
+            )
+
         return [
             # ---- true positives ----
             get(
@@ -183,7 +222,21 @@ class DvwaTarget(EvalTarget):
                 "HTTP-reflection oracle (payload echoed unescaped); weaker than the "
                 "browser-execution XSS harness",
             ),
+            timing(
+                "dvwa-sqli-blind-timing",
+                "Time-based blind SQLi (timing oracle)",
+                "1'+AND+SLEEP(3)--+-",
+                True,
+                "MySQL SLEEP(3) confirmed by response-time delta vs baseline",
+            ),
             # ---- false alarms (expect REJECTED) ----
+            timing(
+                "dvwa-sqli-blind-benign",
+                "Normal query mislabelled time-based SQLi",
+                "2",
+                False,
+                "no injected delay; normal latency variance must not confirm",
+            ),
             get(
                 "dvwa-sqli-benign",
                 VulnClass.INJECTION,

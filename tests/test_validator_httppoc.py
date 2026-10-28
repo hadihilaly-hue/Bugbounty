@@ -8,6 +8,7 @@ collaborator hit vs none, and "no collaborator" -> UNCONFIRMED).
 
 import base64
 import json
+import time
 
 import httpx
 import pytest
@@ -22,6 +23,7 @@ from bugbounty.validator.harnesses.httppoc import (
     _oracle_matches,
     _poc_script,
     evaluate_oracle,
+    evaluate_timing,
 )
 from bugbounty.validator.models import Candidate, ValidationStatus, VulnClass
 
@@ -270,3 +272,74 @@ def test_poc_script_threads_capture_as_shell_var():
     script = _poc_script(reqs, None)
     assert script.startswith("#!/usr/bin/env bash")
     assert "tok=$(" in script and "python3" in script and "${tok}" in script
+
+
+# ------------------------- timing oracle (blind/time-based) ------------------------- #
+
+
+def test_evaluate_timing_true_positive():
+    # ~5s injected sleep vs ~20ms baseline, threshold 3s -> confirmed.
+    assert evaluate_timing([0.02, 0.03], [5.1, 5.2], 3.0) is True
+
+
+def test_evaluate_timing_rejects_normal_jitter():
+    # Sub-second jitter on both sides must not satisfy a 3s-sleep claim.
+    assert evaluate_timing([0.05, 0.6], [0.1, 0.7], 3.0) is False
+
+
+def test_evaluate_timing_absolute_floor():
+    # A 2s delta cannot confirm a claim whose sleep is 3s: injected median < floor.
+    assert evaluate_timing([0.0], [2.0], 3.0) is False
+
+
+def test_evaluate_timing_rejects_overlapping_samples():
+    # If any injected sample is not slower than every baseline sample, reject.
+    assert evaluate_timing([0.1, 4.0], [3.9, 4.1], 3.0) is False
+
+
+def test_evaluate_timing_requires_samples():
+    with pytest.raises(HarnessUnavailable):
+        evaluate_timing([], [5.0], 3.0)
+
+
+def _timing_candidate(base_url: str, min_delta: float) -> Candidate:
+    return Candidate(
+        id="blind-sqli",
+        target_name="t",
+        vuln_class=VulnClass.INJECTION,
+        title="blind time-based sqli",
+        url=f"{base_url}/q",
+        host="h.test",
+        params={
+            "requests": [
+                {"name": "base", "method": "GET", "url": f"{base_url}/q?id=1"},
+                {"name": "inj", "method": "GET", "url": f"{base_url}/q?id=1;sleep"},
+            ],
+            "oracle": {
+                "type": "timing",
+                "baseline": "base",
+                "inject": "inj",
+                "min_delta_seconds": min_delta,
+            },
+        },
+    )
+
+
+def test_timing_oracle_end_to_end_confirms_when_injected_is_slower():
+    def handler(request: httpx.Request) -> httpx.Response:
+        if "sleep" in str(request.url):
+            time.sleep(0.3)
+        return httpx.Response(200, text="ok")
+
+    harness = HttpPocHarness(VulnClass.INJECTION, transport=httpx.MockTransport(handler))
+    r = harness.run(_timing_candidate("https://h.test", 0.15), _target(), Config(dry_run=False))
+    assert r.status is ValidationStatus.CONFIRMED
+
+
+def test_timing_oracle_end_to_end_rejects_when_no_delay():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text="ok")  # no sleep for either request
+
+    harness = HttpPocHarness(VulnClass.INJECTION, transport=httpx.MockTransport(handler))
+    r = harness.run(_timing_candidate("https://h.test", 0.15), _target(), Config(dry_run=False))
+    assert r.status is ValidationStatus.REJECTED
