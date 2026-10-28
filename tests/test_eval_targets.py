@@ -130,3 +130,26 @@ def test_store_and_report_compare_targets(tmp_path):
     report = build_report(store)
     assert "Eval targets (latest per sandbox)" in report
     assert "eval:dvwa" in report and "eval:juiceshop" in report
+
+
+def test_crapi_auth_gated_session_case_hands_in_a_session():
+    """The auth-gated BOLA case carries NO login spec, so the IDOR harness takes
+    its manual (handed-in, origin-pinned) path instead of scripting a login."""
+    cases = CrapiTarget()._session_cases()
+    assert len(cases) == 1
+    case = cases[0]
+    assert case.vulnerable and case.category == "supported"
+    assert case.candidate.vuln_class is VulnClass.IDOR
+    params = case.candidate.params
+    assert "login" not in params, "a handed-in-session case must not script a login"
+    assert params["victim_url"] and params["victim_marker"]
+
+
+def test_crapi_merges_login_and_session_metrics():
+    """The session case is graded against its own creds file, so its metrics are
+    merged into the login-path metrics rather than replacing them."""
+    from bugbounty.jobs.eval_targets.crapi import _merge
+
+    merged = _merge(Metrics(tp=3, fp=0, tn=2, fn=1), Metrics(tp=1))
+    assert (merged.tp, merged.fp, merged.tn, merged.fn) == (4, 0, 2, 1)
+    assert merged.precision == 1.0 and merged.fp_rate == 0.0
