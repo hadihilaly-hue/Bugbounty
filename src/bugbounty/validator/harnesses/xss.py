@@ -24,6 +24,7 @@ pure and unit-tested without a browser.
 
 from __future__ import annotations
 
+import os
 import secrets
 from pathlib import Path
 from typing import Any
@@ -35,6 +36,18 @@ from ..models import Candidate, Evidence, ValidationResult, ValidationStatus, Vu
 
 ARTIFACT_DIR = Path("runs/validator/xss")
 _NONCE = "{NONCE}"
+
+
+def _launch_kwargs() -> dict:
+    """Chromium launch options. ``BB_CHROMIUM_EXECUTABLE`` points the harness at
+    a provisioned browser binary when its build differs from the one bundled
+    with the installed Playwright (otherwise the default launch is used, so
+    behaviour is unchanged wherever the bundled browser matches)."""
+    kw: dict = {"headless": True}
+    exe = os.environ.get("BB_CHROMIUM_EXECUTABLE")
+    if exe:
+        kw["executable_path"] = exe
+    return kw
 
 
 def mint_nonce() -> str:
@@ -118,7 +131,7 @@ class XssHarness(ProofHarness):
 
         try:
             with sync_playwright() as p:
-                browser = p.chromium.launch(headless=True)
+                browser = p.chromium.launch(**_launch_kwargs())
                 page = browser.new_page()
 
                 page.on(

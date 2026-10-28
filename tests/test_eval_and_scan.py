@@ -42,3 +42,13 @@ def test_eval_case_set_shape():
     assert sum(1 for c in cases if c.vulnerable) == 12
     assert sum(1 for c in cases if c.category == "limitation") == 2
     assert sum(1 for c in cases if not c.vulnerable) == 6
+
+
+def test_eval_limitation_cases_now_use_new_capabilities():
+    # The two Juice Shop limitation cases are rewired to exercise the new
+    # harness capabilities (stored-XSS mode; timing oracle) even though they
+    # stay MISSED on this target for target-side reasons (SQLite / auth render).
+    cases = build_cases("http://localhost:3000", "http://localhost:3000/rest/basket/1", "Marker")
+    by_id = {c.candidate.id: c for c in cases}
+    assert by_id["limit-stored-xss"].candidate.params.get("mode") == "stored"
+    assert by_id["limit-blind-sqli"].candidate.params["oracle"]["type"] == "timing"

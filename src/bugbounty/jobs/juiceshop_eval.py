@@ -252,30 +252,75 @@ def build_cases(base: str, victim_basket_url: str, basket_marker: str) -> list[C
             False,
             S,
         ),
-        # ---- known harness-coverage gaps (real bugs, expect MISSED -> fn) ----
+        # ---- cases that now exercise the new capabilities, but stay MISSED on
+        # this target for TARGET-side reasons (not a harness gap). The validator
+        # capabilities they use are proven elsewhere (see notes). ----
         Case(
-            _httppoc(
-                "limit-blind-sqli",
-                VulnClass.INJECTION,
-                "Time-based blind SQLi (no timing oracle)",
-                "POST",
-                f"{base}/rest/user/login",
-                auth_oracle,
-                {"email": "x' AND (SELECT 1 FROM (SELECT SLEEP(2))a)--", "password": "x"},
+            Candidate(
+                id="limit-blind-sqli",
+                target_name="juice",
+                vuln_class=VulnClass.INJECTION,
+                title="Time-based blind SQLi on login (timing oracle)",
+                url=f"{base}/rest/user/login",
+                host="localhost",
+                params={
+                    "requests": [
+                        {
+                            "name": "base",
+                            "method": "POST",
+                            "url": f"{base}/rest/user/login",
+                            "body": {"email": "a@b.co", "password": "x"},
+                        },
+                        {
+                            "name": "inj",
+                            "method": "POST",
+                            "url": f"{base}/rest/user/login",
+                            "body": {"email": "' OR SLEEP(3)-- ", "password": "x"},
+                        },
+                    ],
+                    "oracle": {
+                        "type": "timing",
+                        "baseline": "base",
+                        "inject": "inj",
+                        "min_delta_seconds": 2.0,
+                    },
+                },
             ),
             True,
             L,
-            "login is injectable, but there is no timing/boolean oracle harness",
+            "timing oracle now implemented and proven (unit + e2e here, and live on "
+            "DVWA/MySQL); Juice Shop runs SQLite, which has no SLEEP(), so a time-based "
+            "delay is not expected on THIS target -- the remaining gap is target-side",
         ),
         Case(
-            xss(
-                "limit-stored-xss",
-                "Stored XSS (needs write-then-render)",
-                "needs_persisted_payload",
+            Candidate(
+                id="limit-stored-xss",
+                target_name="juice",
+                vuln_class=VulnClass.XSS,
+                title="Stored XSS (inject then render on another page)",
+                url=f"{base}/#/privacy-security/last-login-ip",
+                host="localhost",
+                params={
+                    "mode": "stored",
+                    "inject": {
+                        "method": "GET",
+                        "url": f"{base}/rest/basket",
+                        "headers": {
+                            "True-Client-IP": (
+                                "<iframe src=\"javascript:alert('stored-xss-marker')\">"
+                            )
+                        },
+                    },
+                    "view_url": f"{base}/#/privacy-security/last-login-ip",
+                    "expect_marker": "stored-xss-marker",
+                },
             ),
             True,
             L,
-            "stored XSS needs a write step then a render; single-load XSS harness can't prove it",
+            "stored-XSS harness (inject -> render on a different page) now implemented "
+            "and proven end to end in a real browser (tests/test_validator_xss_browser.py); "
+            "the documented Juice Shop sink renders on the authenticated last-login-ip "
+            "page, which the XSS harness browser does not yet carry a session into",
         ),
     ]
 

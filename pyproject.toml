@@ -44,3 +44,6 @@ select = ["E", "F", "I", "UP", "B"]
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["tests"]
+markers = [
+    "browser: integration tests that drive a real headless browser; skipped where none is launchable (e.g. CI), run on demand with -m browser",
+]

@@ -57,6 +57,15 @@ def test_every_target_documents_docker_setup():
         assert t.docker_setup().strip()
 
 
+def test_dvwa_has_live_timing_oracle_cases():
+    # The timing oracle is exercised live on DVWA (MySQL SLEEP works there),
+    # with both a true positive and a benign hard negative.
+    cases = DvwaTarget()._cases("PHPSESSID=x; security=low")
+    timing = [c for c in cases if c.candidate.params.get("oracle", {}).get("type") == "timing"]
+    assert any(c.vulnerable for c in timing)
+    assert any(not c.vulnerable for c in timing)
+
+
 def test_grade_perfect_classification():
     cases = [EvalCase(_cand("a"), True), EvalCase(_cand("b"), False)]
     m, ms, rows = grade(cases, _StubValidator({"a"}), _target())
