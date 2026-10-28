@@ -150,6 +150,7 @@ class CrapiTarget(EvalTarget):
             return EvalResult(
                 self.name, False, note="crAPI not reachable at :8888; run docker_setup"
             )
+        config = config or Config(dry_run=False)  # local sandbox: clear the gate here only
         accts = self._accounts(config)
         if accts is None:
             return EvalResult(

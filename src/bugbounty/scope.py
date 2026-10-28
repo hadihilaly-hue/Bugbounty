@@ -53,6 +53,7 @@ class LoginSpec(BaseModel):
     expiry_marker: str | None = None  # body string that means expired (e.g. a login form)
     mfa_marker: str | None = None  # body string that means MFA is required
     mfa_status: int | None = None  # status that means MFA is required
+    mfa_required: bool = False  # declared up front: never attempt headless login
 
 
 class TargetAuth(BaseModel):

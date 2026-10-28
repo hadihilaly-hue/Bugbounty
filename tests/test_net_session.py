@@ -10,7 +10,7 @@ import pytest
 from bugbounty.net import AuthError, Credentials, MfaRequired, SessionManager
 from bugbounty.net.pacing import build_client
 from bugbounty.net.session import Account, _last_set_cookies, extract_csrf
-from bugbounty.scope import LoginSpec
+from bugbounty.scope import LoginSpec, TargetAuth
 
 
 def _noop(*_):
@@ -188,3 +188,66 @@ def test_credentials_load_formats(tmp_path):
     c3 = Credentials.load(p3)
     assert len(c3.accounts) == 1 and c3.accounts[0].is_manual
     assert c3.accounts[0].cookies["session"] == "LIVE"
+
+
+def test_manual_mode_without_live_session_refuses_to_log_in():
+    """mode='manual' must report the missing session, never send a login request."""
+    sent: list[str] = []
+
+    def handler(request):
+        sent.append(str(request.url))
+        return httpx.Response(200, text="ok")
+
+    sm = SessionManager(
+        LoginSpec(mode="manual", url="http://t/login"),
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    with pytest.raises(AuthError, match="manual"):
+        sm.authenticate(Account("a", "u", "p"))
+    assert sent == []
+
+
+def test_manual_mode_uses_handed_in_cookie():
+    sm = SessionManager(
+        LoginSpec(mode="manual"),
+        client=httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(200))),
+    )
+    sm.authenticate(Account("a", cookies={"session": "live-from-browser"}))
+    assert sm.cookie_header() == "session=live-from-browser"
+
+
+def test_declared_mfa_blocks_login_before_any_request():
+    """auth.mfa_required must raise MfaRequired rather than attempt headless login."""
+    sent: list[str] = []
+
+    def handler(request):
+        sent.append(str(request.url))
+        return httpx.Response(200, text="ok")
+
+    auth = TargetAuth(mfa_required=True, login=LoginSpec(mode="form", url="http://t/login"))
+    sm = SessionManager.from_auth(auth, client=httpx.Client(transport=httpx.MockTransport(handler)))
+    with pytest.raises(MfaRequired):
+        sm.authenticate(Account("a", "u", "p"))
+    assert sent == []  # never faked, never attempted
+
+
+def test_session_is_not_leaked_to_another_host():
+    """The cookie/bearer must not ride along to a host outside the target."""
+    seen: dict[str, dict] = {}
+
+    def handler(request):
+        seen[request.url.host] = dict(request.headers)
+        return httpx.Response(200, text="ok")
+
+    sm = SessionManager(
+        LoginSpec(mode="manual"),
+        base_url="http://target",
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    sm.authenticate(Account("a", cookies={"session": "secret"}, bearer_token="tok"))
+    sm.request("GET", "http://target/me")
+    sm.request("GET", "http://evil.example/collect")
+    assert seen["target"]["cookie"] == "session=secret"
+    assert seen["target"]["authorization"] == "Bearer tok"
+    assert "cookie" not in seen["evil.example"]
+    assert "authorization" not in seen["evil.example"]

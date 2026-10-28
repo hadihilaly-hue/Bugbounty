@@ -54,17 +54,47 @@ class _HostClock:
         self._lock = threading.Lock()
 
     def acquire(self, host: str, *, sleep=time.sleep, now=time.monotonic) -> float:
-        if self.min_interval <= 0:
-            return 0.0
+        """Wait until this host's next slot, then reserve the one after it.
+
+        A pending cooldown (see :meth:`block`) is honoured even when pacing is
+        disabled, so a 429 still stops every caller for this host.
+        """
         with self._lock:
             t = now()
             nxt = self._next.get(host, 0.0)
             delay = max(0.0, nxt - t)
-            interval = self.min_interval * (1.0 + random.uniform(0.0, max(0.0, self.jitter)))
+            interval = (
+                self.min_interval * (1.0 + random.uniform(0.0, max(0.0, self.jitter)))
+                if self.min_interval > 0
+                else 0.0
+            )
             self._next[host] = max(t, nxt) + interval
         if delay > 0:
             sleep(delay)
         return delay
+
+    def block(self, host: str, seconds: float, *, now=time.monotonic) -> None:
+        """Hold back *every* caller for this host (a 429 cooldown is host-wide)."""
+        if seconds <= 0:
+            return
+        with self._lock:
+            self._next[host] = max(self._next.get(host, 0.0), now() + seconds)
+
+
+# One clock per pacing setting, shared process-wide: separate clients built for
+# the same host in a run must not each get their own budget of requests/second.
+_SHARED_CLOCKS: dict[tuple[float, float], _HostClock] = {}
+_SHARED_CLOCKS_LOCK = threading.Lock()
+
+
+def shared_clock(pacing: PacingConfig) -> _HostClock:
+    key = (pacing.min_interval, pacing.jitter)
+    with _SHARED_CLOCKS_LOCK:
+        clock = _SHARED_CLOCKS.get(key)
+        if clock is None:
+            clock = _HostClock(pacing.min_interval, pacing.jitter)
+            _SHARED_CLOCKS[key] = clock
+        return clock
 
 
 def retry_after_seconds(value: str | None) -> float | None:
@@ -97,26 +127,33 @@ class PacedTransport(httpx.BaseTransport):
         *,
         clock: _HostClock | None = None,
         sleep=time.sleep,
+        now=time.monotonic,
     ) -> None:
         self._inner = inner
         self._pacing = pacing
-        self._clock = clock or _HostClock(pacing.min_interval, pacing.jitter)
+        self._clock = clock if clock is not None else shared_clock(pacing)
         self._sleep = sleep
+        self._now = now
 
     def handle_request(self, request: httpx.Request) -> httpx.Response:
         host = request.url.host or ""
         attempt = 0
         while True:
-            self._clock.acquire(host, sleep=self._sleep)
+            self._clock.acquire(host, sleep=self._sleep, now=self._now)
             resp = self._inner.handle_request(request)
-            if resp.status_code != 429 or attempt >= self._pacing.max_retries_429:
+            if resp.status_code != 429:
                 return resp
             retry = retry_after_seconds(resp.headers.get("retry-after"))
             if retry is None:
                 retry = min(self._pacing.backoff_max, self._pacing.backoff_base * (2**attempt))
             resp.read()
             resp.close()
-            self._sleep(retry)
+            # A 429 is host-wide: publish the cooldown so the retry (via acquire()
+            # above) AND any other caller for this host wait it out -- even when we
+            # have no retries left and are about to hand the 429 back.
+            self._clock.block(host, retry, now=self._now)
+            if attempt >= self._pacing.max_retries_429:
+                return resp
             attempt += 1
 
     def close(self) -> None:
@@ -136,11 +173,12 @@ def build_client(
     inner: httpx.BaseTransport | None = None,
     clock: _HostClock | None = None,
     sleep=time.sleep,
+    now=time.monotonic,
 ) -> httpx.Client:
     """An httpx.Client whose every request is paced per host and 429-aware."""
     pacing = pacing or PacingConfig.from_config(config)
     inner = inner if inner is not None else httpx.HTTPTransport(verify=verify)
-    transport = PacedTransport(inner, pacing, clock=clock, sleep=sleep)
+    transport = PacedTransport(inner, pacing, clock=clock, sleep=sleep, now=now)
     return httpx.Client(
         transport=transport,
         base_url=base_url,

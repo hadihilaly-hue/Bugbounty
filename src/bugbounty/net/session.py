@@ -20,7 +20,7 @@ import httpx
 import yaml
 
 from ..config import Config
-from ..scope import LoginSpec
+from ..scope import LoginSpec, TargetAuth
 from .pacing import build_client
 
 
@@ -143,15 +143,22 @@ class SessionManager:
         config: Config | None = None,
         base_url: str = "",
         client: httpx.Client | None = None,
+        mfa_required: bool = False,
     ) -> None:
         self.login = login or LoginSpec()
         self.config = config or Config()
         self.base_url = base_url
+        self._mfa_required = mfa_required
         # follow_redirects=False so we can read Set-Cookie and spot login bounces.
         self.client = client or build_client(self.config, base_url=base_url, follow_redirects=False)
         self.cookies: dict[str, str] = {}
         self.bearer: str | None = None
         self._account: Account | None = None
+
+    @classmethod
+    def from_auth(cls, auth: TargetAuth, **kw) -> SessionManager:
+        """Build from a target's auth block, carrying its MFA declaration."""
+        return cls(auth.login, mfa_required=auth.mfa_required, **kw)
 
     # -- public API ---------------------------------------------------------
     def authenticate(self, account: Account) -> SessionManager:
@@ -162,6 +169,11 @@ class SessionManager:
             self.cookies.update(account.cookies)
             self.bearer = account.bearer_token
             return self
+        if self.login.mode == "manual":
+            raise AuthError(
+                f"login.mode is 'manual' but no live session was supplied for "
+                f"{account.label!r}; put cookies/bearer_token in the target's secrets file"
+            )
         if self.login.mfa_marker is None and self.login.mfa_status is None and self._mfa_declared():
             raise MfaRequired(
                 f"target declares MFA for {account.label!r}; hand in a live cookie/bearer "
@@ -185,10 +197,26 @@ class SessionManager:
     def cookie_header(self) -> str:
         return "; ".join(f"{k}={v}" for k, v in self.cookies.items())
 
+    def _session_host(self) -> str | None:
+        for src in (self.base_url, self.login.url, self.login.success_url):
+            if src:
+                host = httpx.URL(src).host
+                if host:
+                    return host
+        return None
+
+    def _auth_headers_for(self, url: str) -> dict[str, str]:
+        """Never hand this session's cookie/bearer to a different host."""
+        req_host = httpx.URL(url).host  # empty for paths resolved against base_url
+        own = self._session_host()
+        if req_host and own and req_host != own:
+            return {}
+        return self.auth_headers()
+
     def request(
         self, method: str, url: str, *, _allow_reauth: bool = True, headers=None, **kw
     ) -> httpx.Response:
-        merged = {**self.auth_headers(), **(headers or {})}
+        merged = {**self._auth_headers_for(url), **(headers or {})}
         resp = self.client.request(method, url, headers=merged, **kw)
         self.cookies.update(_last_set_cookies(resp))
         if _allow_reauth and self._account and not self._account.is_manual and self._expired(resp):
@@ -198,8 +226,8 @@ class SessionManager:
 
     # -- internals ----------------------------------------------------------
     def _mfa_declared(self) -> bool:
-        # TargetAuth.mfa_required is surfaced via LoginSpec by the adapter when set.
-        return getattr(self.login, "mfa_required", False)
+        # Declared either on the target's auth block (via from_auth) or on the spec.
+        return bool(self._mfa_required or self.login.mfa_required)
 
     def _login_form(self, account: Account) -> None:
         if not self.login.url:

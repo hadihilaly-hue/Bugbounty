@@ -8,10 +8,12 @@ import email.utils
 import httpx
 
 from bugbounty.net.pacing import (
+    PacedTransport,
     PacingConfig,
     _HostClock,
     build_client,
     retry_after_seconds,
+    shared_clock,
 )
 
 
@@ -47,13 +49,57 @@ def test_retry_after_parsing():
 
 
 def _client(handler, **pc):
+    """Client with an isolated clock and a fake time base that sleep advances."""
     sleeps: list[float] = []
+    t = [1000.0]
+
+    def sleep(d):
+        sleeps.append(d)
+        t[0] += d
+
+    pacing = PacingConfig(per_host_rps=0, **pc)  # per_host_rps=0 disables interval pacing
     client = build_client(
-        pacing=PacingConfig(per_host_rps=0, **pc),  # per_host_rps=0 disables pacing sleeps
+        pacing=pacing,
         inner=httpx.MockTransport(handler),
-        sleep=lambda d: sleeps.append(d),
+        clock=_HostClock(pacing.min_interval, pacing.jitter),
+        sleep=sleep,
+        now=lambda: t[0],
     )
     return client, sleeps
+
+
+def test_clients_share_one_host_clock():
+    """Two clients for the same host must share a pacing budget, not get one each."""
+    pacing = PacingConfig(per_host_rps=1.0)
+    a = PacedTransport(httpx.MockTransport(lambda r: httpx.Response(200)), pacing)
+    b = PacedTransport(httpx.MockTransport(lambda r: httpx.Response(200)), pacing)
+    assert a._clock is b._clock is shared_clock(pacing)
+
+
+def test_429_cooldown_blocks_other_callers_on_that_host():
+    """A 429 is host-wide: a concurrent caller waits out Retry-After too."""
+    clock = _HostClock(min_interval=0.0, jitter=0.0)
+    t = [500.0]
+    sleeps: list[float] = []
+
+    def sleep(d):
+        sleeps.append(d)
+        t[0] += d
+
+    client = build_client(
+        pacing=PacingConfig(per_host_rps=0, max_retries_429=0),
+        inner=httpx.MockTransport(
+            lambda r: httpx.Response(429, headers=[("retry-after", "30")], text="slow")
+        ),
+        clock=clock,
+        sleep=sleep,
+        now=lambda: t[0],
+    )
+    assert client.get("http://h/x").status_code == 429  # no retries left; cooldown published
+    other: list[float] = []
+    clock.acquire("h", sleep=other.append, now=lambda: t[0])
+    assert other == [30.0]  # a different caller for the same host is held back
+    assert clock.acquire("other-host", sleep=other.append, now=lambda: t[0]) == 0.0
 
 
 def test_429_honors_retry_after():
