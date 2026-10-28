@@ -68,11 +68,28 @@ def _origin(url: str) -> tuple[str, str, int]:
     return (u.scheme, u.host or "", u.port or (443 if u.scheme == "https" else 80))
 
 
-def _get_same_origin(client, url: str, rec: Recon):
-    """GET *url*, following redirects only while they stay on its own origin.
+def _redirect_refusal(nxt: str, origin, scope) -> str | None:
+    """Why this redirect hop must not be followed, or ``None`` if authorized.
 
-    Fail closed: an in-scope page that redirects off-host must not make recon
-    contact a host outside the authorized target, so we stop and record it
+    When a ``scope`` predicate is given it IS the authorization — recon consults
+    the allowlist and follows a hop only to a host the allowlist permits (so a
+    legitimate in-scope cross-host redirect still works). With no predicate we
+    fall back to the fail-closed floor: stay on the starting origin. Either way
+    we never follow a *transport downgrade*, which would put an authenticated
+    recon session's credentials on the wire in plaintext.
+    """
+    if origin[0] == "https" and _origin(nxt)[0] != "https":
+        return "scheme-downgrade"
+    if scope is not None:
+        return None if scope(httpx.URL(nxt).host or "") else "out-of-scope"
+    return None if _origin(nxt) == origin else "off-origin"
+
+
+def _get_same_origin(client, url: str, rec: Recon, scope=None):
+    """GET *url*, following redirects only to authorized destinations.
+
+    Fail closed: an in-scope page that redirects to a host outside the target's
+    allowlist must not make recon contact that host, so we stop and record it
     instead of following.
     """
     origin = _origin(url)
@@ -85,15 +102,18 @@ def _get_same_origin(client, url: str, rec: Recon):
         if not location:
             return resp
         nxt = str(httpx.URL(current).join(location))
-        if _origin(nxt) != origin:
-            rec.notes.append(f"stopped at off-origin redirect: {current} -> {nxt}")
+        why = _redirect_refusal(nxt, origin, scope)
+        if why:
+            rec.notes.append(f"stopped at {why} redirect: {current} -> {nxt}")
             return resp
         current = nxt
     rec.notes.append(f"too many redirects from {url}")
     return resp
 
 
-def recon_http(base_url: str, timeout: float = 15.0, max_js: int = 10, config=None) -> Recon:
+def recon_http(
+    base_url: str, timeout: float = 15.0, max_js: int = 10, config=None, scope=None
+) -> Recon:
     # Paced per host so recon (which runs even in DRY_RUN) never hammers a target.
     from ..net import build_client
 
@@ -101,23 +121,27 @@ def recon_http(base_url: str, timeout: float = 15.0, max_js: int = 10, config=No
     # follow_redirects=False: redirects are vetted per hop against the origin.
     with build_client(config, timeout=timeout, follow_redirects=False) as client:
         try:
-            resp = _get_same_origin(client, base_url, rec)
+            resp = _get_same_origin(client, base_url, rec, scope)
         except Exception as exc:  # noqa: BLE001 - recon failure is non-fatal
             rec.notes.append(f"base fetch failed: {exc}")
             return rec
-        links, scripts, inputs = extract_from_html(base_url, resp.text)
+        # An authorized cross-host redirect changes the page's real origin, so
+        # resolve its relative links/scripts (and filter hosts) against the URL
+        # we actually landed on. rec.base_url keeps the requested URL.
+        page_url = str(resp.url) or base_url
+        links, scripts, inputs = extract_from_html(page_url, resp.text)
         rec.params.extend(inputs)
-        same_host_scripts = [s for s in scripts if _same_host(base_url, s)]
+        same_host_scripts = [s for s in scripts if _same_host(page_url, s)]
         rec.js_bundles = (same_host_scripts or scripts)[:max_js]
-        rec.endpoints.extend(sorted({x for x in links if _same_host(base_url, x)}))
+        rec.endpoints.extend(sorted({x for x in links if _same_host(page_url, x)}))
         for link in links:
             rec.params.extend(m.group(1) for m in _PARAM_RE.finditer(link))
         api: set[str] = set()
         for js in rec.js_bundles:
             try:
                 api.update(
-                    urljoin(base_url, p)
-                    for p in extract_api_paths(_get_same_origin(client, js, rec).text)
+                    urljoin(page_url, p)
+                    for p in extract_api_paths(_get_same_origin(client, js, rec, scope).text)
                 )
             except Exception:  # noqa: BLE001 - skip a bad bundle
                 continue

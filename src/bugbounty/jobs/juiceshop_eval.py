@@ -70,13 +70,17 @@ def build_cases(base: str, victim_basket_url: str, basket_marker: str) -> list[C
         )
 
     def xss(cid, title, q) -> Candidate:
+        url = f"{base}/#/search?q={q}"
         return Candidate(
             id=cid,
             target_name="juice",
             vuln_class=VulnClass.XSS,
             title=title,
-            url=f"{base}/#/search?q={q}",
+            url=url,
             host="localhost",
+            # DOM-XSS proof: the harness mints a nonce and renders it into the
+            # {NONCE} in url_template, then confirms only if the dialog carries it.
+            params={"mode": "dom", "url_template": url},
         )
 
     S, L = "supported", "limitation"

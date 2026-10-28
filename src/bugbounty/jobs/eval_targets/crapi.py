@@ -43,6 +43,11 @@ class CrapiTarget(EvalTarget):
 
     def _accounts(self, config: Config) -> dict | None:
         sfx = uuid.uuid4().hex[:6]
+        # crAPI enforces unique email AND phone number, so a fixed number would
+        # collide with a prior run's registrations in the long-lived DB. Derive a
+        # fresh 10-digit number per run from the same suffix (fail-closed: grading
+        # is skipped if signup/login fails rather than reusing stale accounts).
+        base_num = int(sfx, 16) % 1_000_000_000
         accts = {
             "account_a": {"email": f"bench_a_{sfx}@example.com", "password": _PW},
             "account_b": {"email": f"bench_b_{sfx}@example.com", "password": _PW},
@@ -55,7 +60,7 @@ class CrapiTarget(EvalTarget):
                         json={
                             "name": "Bench",
                             "email": accts[key]["email"],
-                            "number": f"41528{i:05d}",
+                            "number": f"9{(base_num + i) % 1_000_000_000:09d}",
                             "password": _PW,
                         },
                     )
@@ -120,11 +125,44 @@ class CrapiTarget(EvalTarget):
                 VICTIM,
                 True,
             ),
-            idor(
-                "crapi-bola-shop-order",
-                "BOLA: read another user's shop order",
-                "/workshop/api/shop/orders/1",
-                VICTIM,
+            # This crAPI build serves shop order #1 with NO auth (verified: an
+            # unauthenticated GET returns the owner's PII), so the two-account
+            # BOLA oracle correctly refuses to call a *public* object a broken-
+            # access-control bug. Labelled a limitation (counts only toward the
+            # all-cases metrics); the real bug is proven as missing-auth below.
+            EvalCase(
+                Candidate(
+                    id="crapi-bola-shop-order",
+                    target_name="crapi",
+                    vuln_class=VulnClass.IDOR,
+                    title="BOLA: read another user's shop order",
+                    url=f"{b}/workshop/api/shop/orders/1",
+                    host="localhost",
+                    params={
+                        "login": login,
+                        "victim_url": f"{b}/workshop/api/shop/orders/1",
+                        "victim_marker": VICTIM,
+                    },
+                ),
+                True,
+                category="limitation",
+                note="endpoint is public in this build; BOLA needs an access boundary",
+            ),
+            # Real bug, proven under the correct class: the same order is readable
+            # with no authentication at all (missing function-level authorization).
+            EvalCase(
+                Candidate(
+                    id="crapi-unauth-shop-order",
+                    target_name="crapi",
+                    vuln_class=VulnClass.AUTH,
+                    title="Missing auth: shop order readable unauthenticated",
+                    url=f"{b}/workshop/api/shop/orders/1",
+                    host="localhost",
+                    params={
+                        "requests": [{"method": "GET", "url": f"{b}/workshop/api/shop/orders/1"}],
+                        "oracle": contains(VICTIM),
+                    },
+                ),
                 True,
             ),
             idor(

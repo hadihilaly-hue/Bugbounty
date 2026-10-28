@@ -246,8 +246,10 @@ def find(
             raise typer.Exit(2)
 
     reasoner = AnthropicReasoner() if use_llm else None
+    # recon consults the allowlist before following any redirect off the target.
+    scope = (lambda h: al.decide(target_name, h).allowed) if base_url else None
     res = Finder(cfg, reasoner=reasoner).find(
-        target, base_url=base_url, code_path=code_path, use_llm=use_llm
+        target, base_url=base_url, code_path=code_path, use_llm=use_llm, scope=scope
     )
     table = Table(title=f"Candidates for {target_name}")
     for col in ("id", "class", "source", "title"):
