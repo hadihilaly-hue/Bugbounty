@@ -64,6 +64,9 @@ existing global budget caps, applied to every request made through
   capped exponential backoff, retrying up to `BB_MAX_RETRIES_429`.
 - The global per-run request / concurrency / USD / wall-clock caps and the kill
   switch are unchanged and still apply on top.
+- Recon fails closed on redirects: it follows a redirect only while it stays on
+  the target's origin (scheme+host+port) and records off-origin redirects as
+  notes instead of contacting a host outside the authorized target.
 Unit-tested: per-host spacing, host independence, `Retry-After` parsing,
 honour-`Retry-After`, exponential backoff, and give-up-after-max-retries.
 
