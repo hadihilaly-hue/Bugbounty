@@ -69,3 +69,94 @@ def test_recon_follows_full_same_origin_chain(monkeypatch):
     rec = recon_http("http://target/")
     assert paths == ["/", "/a", "/b", "/c", "/d", "/home"]  # landing page reached
     assert not any("too many redirects" in n for n in rec.notes)
+
+
+def test_recon_follows_in_scope_cross_host_redirect(monkeypatch):
+    """A redirect to another in-scope host IS followed (allowlist, not origin)."""
+    hosts: list[str] = []
+
+    def handler(request):
+        hosts.append(request.url.host)
+        if request.url.host == "app":
+            return httpx.Response(302, headers={"location": "http://api/landing"})
+        return httpx.Response(200, text='<html><a href="/x">x</a></html>')
+
+    _patch_client(monkeypatch, handler)
+    scope = lambda h: h in {"app", "api"}  # noqa: E731
+    from bugbounty.recon.http import recon_http as _rh
+
+    rec = _rh("http://app", scope=scope)
+    assert hosts == ["app", "api"]  # cross-host hop allowed because api is in scope
+    assert not any("redirect" in n for n in rec.notes)
+
+
+def test_recon_refuses_out_of_scope_redirect(monkeypatch):
+    """A redirect to a host the allowlist does not permit is refused and logged."""
+    hosts: list[str] = []
+
+    def handler(request):
+        hosts.append(request.url.host)
+        if request.url.host == "app":
+            return httpx.Response(302, headers={"location": "http://evil.example/x"})
+        return httpx.Response(200, text="<html>should never be fetched</html>")
+
+    _patch_client(monkeypatch, handler)
+    scope = lambda h: h in {"app", "api"}  # noqa: E731
+    from bugbounty.recon.http import recon_http as _rh
+
+    rec = _rh("http://app", scope=scope)
+    assert hosts == ["app"]  # evil.example is never contacted
+    assert any("out-of-scope redirect" in n for n in rec.notes)
+
+
+def _prog_allowlist():
+    """A real two-host allowlist, mirroring what the CLI hands recon."""
+    from bugbounty.scope import Allowlist, Platform, Target
+
+    return Allowlist(
+        targets=[
+            Target(
+                name="prog",
+                platform=Platform.SELF,
+                safe_harbor_url="https://example.com/security",
+                in_scope=["app.example.com", "api.example.com"],
+                out_of_scope=["legacy.example.com"],
+            )
+        ]
+    )
+
+
+def test_recon_follows_in_scope_redirect_via_real_allowlist(monkeypatch):
+    """The scope predicate is the target's own Allowlist.decide (not a lambda)."""
+    al = _prog_allowlist()
+    scope = lambda h: al.decide("prog", h).allowed  # noqa: E731
+    hosts: list[str] = []
+
+    def handler(request):
+        hosts.append(request.url.host)
+        if request.url.host == "app.example.com":
+            return httpx.Response(302, headers={"location": "http://api.example.com/x"})
+        return httpx.Response(200, text="<html></html>")
+
+    _patch_client(monkeypatch, handler)
+    rec = recon_http("http://app.example.com", scope=scope)
+    assert hosts == ["app.example.com", "api.example.com"]
+    assert not any("redirect" in n for n in rec.notes)
+
+
+def test_recon_refuses_out_of_scope_redirect_via_real_allowlist(monkeypatch):
+    """An explicitly out-of-scope destination is refused by the real allowlist."""
+    al = _prog_allowlist()
+    scope = lambda h: al.decide("prog", h).allowed  # noqa: E731
+    hosts: list[str] = []
+
+    def handler(request):
+        hosts.append(request.url.host)
+        if request.url.host == "app.example.com":
+            return httpx.Response(302, headers={"location": "http://legacy.example.com/x"})
+        return httpx.Response(200, text="<html>never fetched</html>")
+
+    _patch_client(monkeypatch, handler)
+    rec = recon_http("http://app.example.com", scope=scope)
+    assert hosts == ["app.example.com"]
+    assert any("out-of-scope redirect" in n for n in rec.notes)

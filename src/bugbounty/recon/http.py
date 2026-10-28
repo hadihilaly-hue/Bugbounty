@@ -68,11 +68,24 @@ def _origin(url: str) -> tuple[str, str, int]:
     return (u.scheme, u.host or "", u.port or (443 if u.scheme == "https" else 80))
 
 
-def _get_same_origin(client, url: str, rec: Recon):
-    """GET *url*, following redirects only while they stay on its own origin.
+def _redirect_allowed(nxt: str, origin, scope) -> bool:
+    """A redirect hop is allowed only if the destination is authorized.
 
-    Fail closed: an in-scope page that redirects off-host must not make recon
-    contact a host outside the authorized target, so we stop and record it
+    When a ``scope`` predicate is given it IS the authorization — recon consults
+    the allowlist and follows a hop only to a host the allowlist permits (so a
+    legitimate in-scope cross-host redirect still works). With no predicate we
+    fall back to the fail-closed floor: stay on the starting origin.
+    """
+    if scope is not None:
+        return bool(scope(httpx.URL(nxt).host or ""))
+    return _origin(nxt) == origin
+
+
+def _get_same_origin(client, url: str, rec: Recon, scope=None):
+    """GET *url*, following redirects only to authorized destinations.
+
+    Fail closed: an in-scope page that redirects to a host outside the target's
+    allowlist must not make recon contact that host, so we stop and record it
     instead of following.
     """
     origin = _origin(url)
@@ -85,15 +98,18 @@ def _get_same_origin(client, url: str, rec: Recon):
         if not location:
             return resp
         nxt = str(httpx.URL(current).join(location))
-        if _origin(nxt) != origin:
-            rec.notes.append(f"stopped at off-origin redirect: {current} -> {nxt}")
+        if not _redirect_allowed(nxt, origin, scope):
+            why = "out-of-scope" if scope is not None else "off-origin"
+            rec.notes.append(f"stopped at {why} redirect: {current} -> {nxt}")
             return resp
         current = nxt
     rec.notes.append(f"too many redirects from {url}")
     return resp
 
 
-def recon_http(base_url: str, timeout: float = 15.0, max_js: int = 10, config=None) -> Recon:
+def recon_http(
+    base_url: str, timeout: float = 15.0, max_js: int = 10, config=None, scope=None
+) -> Recon:
     # Paced per host so recon (which runs even in DRY_RUN) never hammers a target.
     from ..net import build_client
 
@@ -101,7 +117,7 @@ def recon_http(base_url: str, timeout: float = 15.0, max_js: int = 10, config=No
     # follow_redirects=False: redirects are vetted per hop against the origin.
     with build_client(config, timeout=timeout, follow_redirects=False) as client:
         try:
-            resp = _get_same_origin(client, base_url, rec)
+            resp = _get_same_origin(client, base_url, rec, scope)
         except Exception as exc:  # noqa: BLE001 - recon failure is non-fatal
             rec.notes.append(f"base fetch failed: {exc}")
             return rec
@@ -117,7 +133,7 @@ def recon_http(base_url: str, timeout: float = 15.0, max_js: int = 10, config=No
             try:
                 api.update(
                     urljoin(base_url, p)
-                    for p in extract_api_paths(_get_same_origin(client, js, rec).text)
+                    for p in extract_api_paths(_get_same_origin(client, js, rec, scope).text)
                 )
             except Exception:  # noqa: BLE001 - skip a bad bundle
                 continue

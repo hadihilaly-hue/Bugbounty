@@ -85,8 +85,12 @@ def test_unavailable_sandbox_returns_no_metrics(monkeypatch):
 
 def test_crapi_answer_key_shape():
     cases = CrapiTarget()._cases()
-    assert len(cases) == 5
-    assert sum(1 for c in cases if c.vulnerable) == 3
+    assert len(cases) == 6
+    # 4 real bugs: two BOLA (mechanic report, community PII), the public shop
+    # order proven as missing-auth, plus the same shop order kept as a labelled
+    # BOLA limitation (the object is public, so the two-account oracle declines).
+    assert sum(1 for c in cases if c.vulnerable) == 4
+    assert sum(1 for c in cases if c.category == "limitation") == 1
     idor = [c for c in cases if c.candidate.vuln_class == VulnClass.IDOR]
     assert idor and all("victim_marker" in c.candidate.params for c in idor)
 

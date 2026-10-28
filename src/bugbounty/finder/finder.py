@@ -89,10 +89,13 @@ class Finder:
         use_llm: bool = True,
         max_candidates: int = 25,
         recon: Recon | None = None,
+        scope=None,
     ) -> FinderResult:
         notes: list[str] = []
         if recon is None:
-            recon = recon_http(base_url) if base_url else Recon(base_url=base_url or "")
+            recon = (
+                recon_http(base_url, scope=scope) if base_url else Recon(base_url=base_url or "")
+            )
         notes.extend(recon.notes)
 
         signals: list[Signal] = []
