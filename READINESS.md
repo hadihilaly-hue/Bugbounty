@@ -18,6 +18,23 @@ do not predate it:
 | crapi | 1.00 | 0.75 | 0.00 | 3/0/2/1 | supported-only recall 1.00 |
 | owasp-benchmark | – | – | – | answer key only | 2740 cases; needs Maven/Tomcat+crawler |
 
+**Live re-run status (this change, post #12 + #13):** the full graded eval could
+**not** be re-run in this environment — there is no Docker daemon here, so none
+of the sandboxes (`:3000` / `:4280` / `:8888`) can be stood up (`bugbounty
+eval-all` reports every target `available: no`). The figures above are the
+last-verified live numbers (Devin's #13: juiceshop 1.00/0.83/0.00, dvwa
+1.00/1.00/0.00, crapi 1.00/0.75/0.00). This change does **not** move them: it is
+additive and session-gated, the eval adapters and their case sets are untouched
+(verified by diff and by the deterministic eval-shape tests), and the existing
+eval cases hand in no session, so they exercise the same paths as before. The
+new handed-in-session capability is proven on a **local auth-gated sandbox**
+(`tests/test_validator_live_session.py`), not yet wired into the live eval cases
+(that needs per-target session secrets). To get real integrated numbers, run
+`bugbounty eval-all` on a host with the sandboxes up; to measure whether
+auth-gated cases lift recall, add handed-in-session secrets for a target and an
+auth-gated case to its adapter. The full deterministic suite is green here
+(152 passed, 2 pre-existing skips).
+
 **Regression check (the auth changes):** no regression from origin-scoped
 credential pinning. The legit **same-origin authenticated flows the eval depends
 on still pass** — DVWA's CSRF+cookie login grades 1.00/1.00/0.00, and Juice
@@ -67,13 +84,25 @@ than Juice Shop's token API) grades 1.00/1.00/0.00 live this run; same-origin
 two-account IDOR/BOLA confirm on Juice Shop and crAPI; plus unit tests for cookie
 reuse, CSRF inclusion, re-auth on expiry, MFA detection, manual-cookie injection,
 and cross-host credential refusal.
+**Post-auth testing is now wired into the proof harnesses (manual-handoff
+case).** A session handed in via secrets (cookies / bearer / `local_storage`,
+per account) is carried, origin-pinned, into BOTH the HTTP proof harnesses
+(`httppoc` opt-in per account; `idor` for either account) AND the XSS render
+navigation (cookies + localStorage seeded into the browser) — so IDOR/BOLA and
+auth-gated stored XSS finally run post-auth without the harness attempting a
+login. An expired/invalid handed-in session is surfaced loudly (UNCONFIRMED with
+a clear reason), never run unauthenticated. **Proven end to end on a local
+auth-gated sandbox** (`tests/test_validator_live_session.py`): two-account IDOR
+over real HTTP with handed-in cookies → CONFIRMED, and an auth-gated stored XSS
+rendered behind the session in a real browser → CONFIRMED; plus a unit test that
+the handed-in session is refused off its pinned origin (the #11 fix holds for
+handed-in sessions too).
 **Still weak:** full OAuth/SSO redirect dances, WebAuthn/complex MFA, and
-aggressive anti-bot (CAPTCHA / device fingerprinting) are not automated — use the
-manual handed-in-session path. The validator proof harnesses
-(`validator/harnesses/*`) still open their own httpx clients, so session reuse
-there isn't wired in yet; today the session reaches HTTP-PoC candidates via
-injected request headers, and recon + the eval adapters use the shared
-authenticated client.
+aggressive anti-bot (CAPTCHA / device fingerprinting) are not automated — that is
+exactly what the manual handoff is for. `SessionManager` logins go through the
+paced `net.build_client`, but the harness *request loops* (`idor`/`httppoc`)
+still open their own un-paced httpx client for the proof requests themselves —
+session-aware now, not yet pace-aware.
 
 ### CLOSED + verified — Rate limiting / per-host pacing
 `src/bugbounty/net/pacing.py` adds per-host pacing + backoff on top of the global
@@ -138,28 +167,43 @@ signal is currently a no-op.
 - No auto-submit anywhere; scope auto-ingest blocked (`intake.py` raises).
 - Hard budget caps + credit-window warnings + kill switch.
 
-## If you added one real authorized program today, what breaks first (ranked)
-1. **Login.** Real targets rarely have a plain form/token login like the
-   sandboxes — expect OAuth/SSO redirects, MFA, CAPTCHA, or anti-bot. Automated
-   login will fail and you'll have to hand in a live browser session cookie
-   (supported). Until you do, every post-auth test — the valuable IDOR/BOLA/ATO
-   class — can't run.
-2. **Recall / proof coverage.** Even authenticated, the validator only proves
-   SQLi/auth-HTTP, two-account IDOR/BOLA, DOM XSS, and missing-auth/exposure. A
-   real program's stored XSS, blind/time SQLi, CSRF, SSRF, JWT, and
-   business-logic bugs come back UNCONFIRMED → a human-triage backlog and a
-   confirmed-recall far below the sandbox figures.
-3. **Rate limiting / WAF reality.** The fixed 1 req/s + 429 backoff is polite but
-   naive against a real WAF/CDN that may block, tarpit, or fingerprint; and the
-   validator proof harnesses still open their own **unpaced** httpx clients, so
-   their requests bypass pacing and the shared session — risking tripped
-   protection and inconsistent auth mid-proof.
+## If you added one real authorized program today, what breaks first (re-ranked)
+
+**Is the login / post-auth gap closed? For the manual-handoff case, yes.** You
+log in yourself in a real browser, hand in the live session via secrets, and the
+validator now carries it (origin-pinned) into the HTTP proof harnesses and the
+XSS render — so IDOR/BOLA and auth-gated stored XSS run post-auth, proven on a
+local auth-gated sandbox. What is **not** closed: *automated* login for
+OAuth/SSO/MFA/anti-bot (by design — hand in a session instead), and keeping that
+session alive. So the former #1 ("login blocks all post-auth") drops; the
+friction and the freshness/writes of the handed-in session move up.
+
+1. **Recall / proof coverage.** Still the biggest gap. Even fully authenticated,
+   the validator only proves SQLi/auth-HTTP, two-account IDOR/BOLA, reflected/
+   DOM **and now auth-gated stored** XSS, time-based blind SQLi (timing oracle),
+   and missing-auth/exposure. CSRF, live SSRF, JWT/alg-confusion, and
+   business-logic bugs still come back UNCONFIRMED → a human-triage backlog and a
+   confirmed-recall well below the sandbox figures.
+2. **Rate limiting / WAF reality + unpaced harness requests.** The fixed 1 req/s
+   + 429 backoff is polite but naive against a real WAF/CDN that may block,
+   tarpit, or fingerprint; and the `idor`/`httppoc` proof **request loops** still
+   open their own **unpaced** httpx client (session-aware now, but not routed
+   through `net.build_client`), so those requests bypass per-host pacing —
+   risking tripped protection mid-proof. Wire the harness request path through
+   `net.build_client` next.
+3. **Session lifecycle for post-auth: capture friction, expiry, and writes.** The
+   manual handoff works but is manual: a human must capture a browser session per
+   account, and it goes stale — we now surface an expired handed-in session
+   clearly (good), but testing halts until you paste a fresh one, and there's no
+   refresh. Write-based post-auth tests (CSRF, IDOR-on-write, password reset)
+   also need per-request CSRF-token handling the proof harnesses don't do yet.
 
 ## Recommendation
 The two HIGH gaps (auth/session, rate limiting) and the recon/scope redirect fix
-are closed and verified on current `main`. Before a real program: (1) wire
-`net.build_client` + `SessionManager` into the validator proof harnesses so their
-requests are paced and session-aware; (2) keep `DRY_RUN` on for a first
+are closed and verified on current `main`. Before a real program: (1) the validator
+proof harnesses are now **session-aware** (handed-in session carried in,
+origin-pinned) — the remaining half is routing their proof *request loops*
+through `net.build_client` so they are **paced** too; (2) keep `DRY_RUN` on for a first
 **supervised** pass (recon + static only), clearing the gate only for a single
 known endpoint you watch live; (3) treat unproven-class findings as manual
 triage, not misses; (4) use the manual handed-in-session path for

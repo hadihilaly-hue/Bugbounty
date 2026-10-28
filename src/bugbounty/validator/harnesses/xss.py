@@ -24,6 +24,7 @@ pure and unit-tested without a browser.
 
 from __future__ import annotations
 
+import json
 import os
 import secrets
 from pathlib import Path
@@ -99,6 +100,29 @@ def _render(value: str, nonce: str) -> str:
     return value.replace(_NONCE, nonce)
 
 
+def _seed_session(context: Any, session: Any, nav_url: str) -> None:
+    """Carry a session into the browser for an auth-gated render: cookies via the
+    context, and localStorage (SPA token apps) seeded at document start. Both are
+    origin-scoped -- cookies are refused off the session's pinned origin, and the
+    localStorage seed guards on ``location.origin`` -- so the session never leaks
+    to another host."""
+    if session is None:
+        return
+    from ._sessions import origin_base
+
+    cookies = session.browser_cookies(nav_url)
+    if cookies:
+        context.add_cookies(cookies)
+    ls = session.local_storage
+    if ls:
+        script = (
+            "try { if (location.origin === " + json.dumps(origin_base(nav_url)) + ") {"
+            " var d = " + json.dumps(ls) + ";"
+            " for (var k in d) { localStorage.setItem(k, d[k]); } } } catch (e) {}"
+        )
+        context.add_init_script(script)
+
+
 class XssHarness(ProofHarness):
     vuln_class = VulnClass.XSS
     sends_active_payload = True
@@ -118,8 +142,21 @@ class XssHarness(ProofHarness):
         ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
         shot = ARTIFACT_DIR / f"{candidate.id}.png"
 
+        # Optional authenticated render: carry a (possibly handed-in) session so
+        # an auth-gated sink can be reached. Built before injection so the inject
+        # request is authenticated too.
+        session = None
+        want_auth = candidate.params.get("authenticated") or candidate.params.get("auth_account")
+        if want_auth:
+            from ._sessions import build_account_session, origin_base
+
+            nav_origin = origin_base(candidate.params.get("view_url") or candidate.url)
+            session = build_account_session(
+                target, config, candidate.params.get("auth_account"), base_url=nav_origin
+            )
+
         if mode == "stored":
-            self._inject(candidate, nonce)
+            self._inject(candidate, nonce, session)
             nav_url = candidate.params.get("view_url")
             if not nav_url:
                 raise HarnessUnavailable("stored XSS needs a 'view_url' to observe execution")
@@ -132,7 +169,9 @@ class XssHarness(ProofHarness):
         try:
             with sync_playwright() as p:
                 browser = p.chromium.launch(**_launch_kwargs())
-                page = browser.new_page()
+                context = browser.new_context()
+                _seed_session(context, session, nav_url)
+                page = context.new_page()
 
                 page.on(
                     "dialog",
@@ -187,8 +226,9 @@ class XssHarness(ProofHarness):
             evidence=evidence,
         )
 
-    def _inject(self, candidate: Candidate, nonce: str) -> None:
-        """Stored-XSS injection step: POST the payload to its sink."""
+    def _inject(self, candidate: Candidate, nonce: str, session: Any = None) -> None:
+        """Stored-XSS injection step: POST the payload to its sink (authenticated
+        with the handed-in session's origin-pinned headers when one is given)."""
         try:
             import httpx
         except ImportError as exc:  # pragma: no cover
@@ -198,11 +238,14 @@ class XssHarness(ProofHarness):
             raise HarnessUnavailable("stored XSS needs an 'inject' request with a url")
         body = inject.get("body_template")
         body = _render(body, nonce) if isinstance(body, str) else inject.get("body")
+        headers = dict(inject.get("headers") or {})
+        if session is not None:
+            headers = {**session.headers_for(inject["url"]), **headers}
         with httpx.Client(timeout=15.0, follow_redirects=True) as client:
             resp = client.request(
                 inject.get("method", "POST").upper(),
                 inject["url"],
-                headers=inject.get("headers"),
+                headers=headers or None,
                 content=body if isinstance(body, str) else None,
                 json=body if isinstance(body, dict) else None,
             )

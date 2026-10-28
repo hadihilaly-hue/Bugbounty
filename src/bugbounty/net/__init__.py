@@ -9,7 +9,7 @@ internals on purpose (those are evolved on a separate branch).
 from __future__ import annotations
 
 from .pacing import PacedTransport, PacingConfig, build_client
-from .session import AuthError, Credentials, MfaRequired, SessionManager
+from .session import AuthError, Credentials, MfaRequired, SessionInvalid, SessionManager
 
 __all__ = [
     "AuthError",
@@ -17,6 +17,7 @@ __all__ = [
     "MfaRequired",
     "PacedTransport",
     "PacingConfig",
+    "SessionInvalid",
     "SessionManager",
     "build_client",
 ]

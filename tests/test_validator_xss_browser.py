@@ -17,7 +17,6 @@ harness is driven directly (the engine's dry-run gate is tested elsewhere).
 from __future__ import annotations
 
 import html
-import os
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
@@ -29,38 +28,9 @@ from bugbounty.scope import Platform, Target
 from bugbounty.validator.harnesses.xss import XssHarness
 from bugbounty.validator.models import Candidate, ValidationStatus, VulnClass
 
+# A launchable Chromium is resolved by the shared ``browser_ready`` fixture
+# (tests/conftest.py); this whole module is browser-gated.
 pytestmark = pytest.mark.browser
-
-_PROVISIONED = [
-    "/opt/pw-browsers/chromium",
-    "/opt/pw-browsers/chromium_headless_shell-1243/chrome-headless-shell-linux64/chrome-headless-shell",
-]
-
-
-def _resolve_browser() -> str | None | object:
-    """Return a working executable path, None if the default launch works, or
-    the SKIP sentinel if no Chromium can be launched."""
-    from playwright.sync_api import sync_playwright
-
-    tried: list[str | None] = []
-    for exe in [os.environ.get("BB_CHROMIUM_EXECUTABLE"), None, *_PROVISIONED]:
-        if exe in tried:
-            continue
-        tried.append(exe)
-        try:
-            with sync_playwright() as p:
-                kw: dict = {"headless": True}
-                if exe:
-                    kw["executable_path"] = exe
-                browser = p.chromium.launch(**kw)
-                browser.close()
-            return exe
-        except Exception:
-            continue
-    return _SKIP
-
-
-_SKIP = object()
 
 
 # --------------------------- local vulnerable target --------------------------- #
@@ -103,17 +73,6 @@ class _Handler(BaseHTTPRequestHandler):
         raw = self.rfile.read(length).decode()
         _STORE["payload"] = parse_qs(raw).get("payload", [raw])[0]
         self._send("stored")
-
-
-@pytest.fixture(scope="module")
-def browser_ready():
-    resolved = _resolve_browser()
-    if resolved is _SKIP:
-        pytest.skip("no launchable Chromium in this environment")
-    if isinstance(resolved, str):
-        os.environ["BB_CHROMIUM_EXECUTABLE"] = resolved
-    # else: default launch works; leave env as-is
-    yield
 
 
 @pytest.fixture(scope="module")
