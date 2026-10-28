@@ -77,8 +77,7 @@ def _get_same_origin(client, url: str, rec: Recon):
     """
     origin = _origin(url)
     current = url
-    resp = None
-    for _ in range(_MAX_REDIRECTS):
+    for _ in range(_MAX_REDIRECTS + 1):
         resp = client.get(current)
         if not resp.is_redirect:
             return resp

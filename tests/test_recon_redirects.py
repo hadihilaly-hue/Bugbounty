@@ -52,3 +52,20 @@ def test_recon_follows_same_origin_redirect(monkeypatch):
     rec = recon_http("http://target/")
     assert paths == ["/", "/home"]
     assert not any("off-origin" in n for n in rec.notes)
+
+
+def test_recon_follows_full_same_origin_chain(monkeypatch):
+    chain = {"/": "/a", "/a": "/b", "/b": "/c", "/c": "/d", "/d": "/home"}
+    paths: list[str] = []
+
+    def handler(request):
+        paths.append(request.url.path)
+        nxt = chain.get(request.url.path)
+        if nxt is not None:
+            return httpx.Response(302, headers={"location": nxt})
+        return httpx.Response(200, text='<html><a href="/api/orders">o</a></html>')
+
+    _patch_client(monkeypatch, handler)
+    rec = recon_http("http://target/")
+    assert paths == ["/", "/a", "/b", "/c", "/d", "/home"]  # landing page reached
+    assert not any("too many redirects" in n for n in rec.notes)
