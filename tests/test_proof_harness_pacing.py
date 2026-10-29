@@ -153,3 +153,48 @@ def test_timing_oracle_excludes_pacing_wait(monkeypatch):
     r = harness.run(cand, target, Config(dry_run=False))
     assert r.status is ValidationStatus.REJECTED  # honest: no real server delay
     assert host in pacing._SHARED_CLOCK._last  # pacing WAS applied to the proof requests
+
+
+def test_timing_oracle_subtracts_pacing_across_redirects(monkeypatch):
+    """Redirect hops are paced too: client.request returns only the final
+    response, so the oracle must also subtract the waits recorded on resp.history.
+    Identical baseline/injected redirect chains with no server delay must REJECT."""
+    monkeypatch.setenv("BB_PER_HOST_RPS", "5")  # 0.2s interval
+    monkeypatch.setenv("BB_PACING_JITTER", "0")
+    host = _host()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/landing":
+            return httpx.Response(200, text="ok")  # instant, no server delay
+        return httpx.Response(302, headers={"location": f"https://{host}/landing"})
+
+    cand = Candidate(
+        id="pace-timing-redir",
+        target_name="t",
+        vuln_class=VulnClass.INJECTION,
+        title="blind sqli via redirecting endpoints",
+        url=f"https://{host}/base",
+        host=host,
+        params={
+            "requests": [
+                {"name": "base", "method": "GET", "url": f"https://{host}/base"},
+                {"name": "inj", "method": "GET", "url": f"https://{host}/inj"},
+            ],
+            "oracle": {
+                "type": "timing",
+                "baseline": "base",
+                "inject": "inj",
+                "min_delta_seconds": 0.15,
+            },
+        },
+    )
+    target = Target(
+        name="t",
+        platform=Platform.SELF,
+        safe_harbor_url=f"https://{host}/sh",
+        in_scope=[host],
+        dry_run=False,
+    )
+    harness = HttpPocHarness(VulnClass.INJECTION, transport=httpx.MockTransport(handler))
+    r = harness.run(cand, target, Config(dry_run=False))
+    assert r.status is ValidationStatus.REJECTED  # redirect pacing fully subtracted

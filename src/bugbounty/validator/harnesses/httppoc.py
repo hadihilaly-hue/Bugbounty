@@ -400,10 +400,13 @@ class HttpPocHarness(ProofHarness):
                 )
                 # Full request time (headers AND body) minus the per-host pacing
                 # wait: politeness delay must not count toward a timing oracle, but
-                # a body-delayed blind-SQLi response still must.
-                elapsed = max(
-                    0.0, (time.perf_counter() - _t0) - resp.extensions.get("bb_pacing_wait", 0.0)
+                # a body-delayed blind-SQLi response still must. Sum the wait across
+                # every hop (redirects) -- client.request returns only the final
+                # response, so earlier hops' waits live on resp.history.
+                paced = resp.extensions.get("bb_pacing_wait", 0.0) + sum(
+                    h.extensions.get("bb_pacing_wait", 0.0) for h in resp.history
                 )
+                elapsed = max(0.0, (time.perf_counter() - _t0) - paced)
                 if (
                     session
                     and session.is_manual
