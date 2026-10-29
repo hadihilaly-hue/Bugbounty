@@ -41,6 +41,15 @@ def _merge(a: Metrics, b: Metrics) -> Metrics:
     return Metrics(tp=a.tp + b.tp, fp=a.fp + b.fp, tn=a.tn + b.tn, fn=a.fn + b.fn)
 
 
+def _write_secret(path: str, data: dict) -> None:
+    """Write a credentials file readable only by the current user (0600): it
+    holds live passwords/bearer tokens, so other local users must not read it."""
+    p = Path(path)
+    p.touch(mode=0o600, exist_ok=True)
+    p.chmod(0o600)
+    p.write_text(yaml.safe_dump(data))
+
+
 class CrapiTarget(EvalTarget):
     name = "crapi"
     base_url = "http://localhost:8888"
@@ -241,8 +250,8 @@ class CrapiTarget(EvalTarget):
             )
         accts, session_accts = prepared
         Path(_CREDS).parent.mkdir(parents=True, exist_ok=True)
-        Path(_CREDS).write_text(yaml.safe_dump(accts))
-        Path(_SESSION_CREDS).write_text(yaml.safe_dump(session_accts))
+        _write_secret(_CREDS, accts)
+        _write_secret(_SESSION_CREDS, session_accts)
 
         def _target(creds_ref: str) -> Target:
             return Target(
