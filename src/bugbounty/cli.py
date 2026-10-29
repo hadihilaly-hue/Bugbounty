@@ -20,6 +20,24 @@ console = Console()
 DEFAULT_ALLOWLIST = "targets.yaml"
 
 
+def _require_attribution(target) -> None:
+    """Refuse to touch a real (non-SELF) target whose required_headers are still
+    unfilled/placeholder -- so we never send un-attributed traffic (e.g. missing
+    the HackerOne X-HackerOne-Research header) to an authorized program."""
+    from bugbounty.scope import Platform
+
+    if target.platform is Platform.SELF:
+        return
+    missing = target.unfilled_required_headers()
+    if missing:
+        console.print(
+            f"[red]refusing to run against {target.name!r}: required header(s) {missing} "
+            f"are empty or placeholders. Fill them (e.g. your HackerOne username in "
+            f"required_headers) before any pass.[/]"
+        )
+        raise typer.Exit(2)
+
+
 @app.command()
 def version() -> None:
     """Print the harness version."""
@@ -91,6 +109,10 @@ def validate(
     validator = Validator(cfg)
     data = yaml.safe_load(Path(candidates_file).read_text()) or {}
     raw = data.get("candidates") or []
+    for tname in {str(it.get("target_name")) for it in raw if isinstance(it, dict)}:
+        t = al.target_by_name(tname)
+        if t is not None:
+            _require_attribution(t)
     table = Table(title=f"Validation results ({candidates_file})")
     for col in ("id", "class", "status", "queue", "reason"):
         table.add_column(col)
@@ -196,6 +218,10 @@ def run_batch(
     al = load_allowlist(allowlist)
     data = yaml.safe_load(Path(candidates_file).read_text()) or {}
     cands = [Candidate.model_validate(x) for x in (data.get("candidates") or [])]
+    for tname in {c.target_name for c in cands}:
+        t = al.target_by_name(tname)
+        if t is not None:
+            _require_attribution(t)
     orch = Orchestrator(
         cfg,
         Store(db),
@@ -245,6 +271,7 @@ def find(
             console.print(f"[red]refusing: {host} is out of scope — {decision.reason}[/]")
             raise typer.Exit(2)
 
+    _require_attribution(target)
     reasoner = AnthropicReasoner() if use_llm else None
     # recon consults the allowlist before following any redirect off the target.
     scope = (lambda h: al.decide(target_name, h).allowed) if base_url else None

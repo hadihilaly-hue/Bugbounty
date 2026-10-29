@@ -29,10 +29,12 @@ class PacingConfig:
     backoff_max: float = 30.0
 
     @classmethod
-    def from_config(cls, config: Config | None) -> PacingConfig:
+    def from_config(
+        cls, config: Config | None, *, per_host_rps: float | None = None
+    ) -> PacingConfig:
         config = config or Config()
         return cls(
-            per_host_rps=config.per_host_rps,
+            per_host_rps=config.per_host_rps if per_host_rps is None else per_host_rps,
             jitter=config.pacing_jitter,
             max_retries_429=config.max_retries_429,
             backoff_base=config.backoff_base_seconds,
