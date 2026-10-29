@@ -14,6 +14,7 @@ def _patch_client(monkeypatch, handler):
 
     def fake(config=None, **kw):
         kw.pop("inner", None)
+        kw.pop("pacing", None)  # recon now passes an explicit pacing; the mock forces its own
         return real(
             pacing=PacingConfig(per_host_rps=0),
             inner=httpx.MockTransport(handler),
