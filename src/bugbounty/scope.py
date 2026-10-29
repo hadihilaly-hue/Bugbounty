@@ -74,7 +74,7 @@ class TargetAuth(BaseModel):
 class RateLimit(BaseModel):
     """Optional per-target politeness override (otherwise the global pace applies)."""
 
-    per_host_rps: float = 1.0
+    per_host_rps: float = Field(default=1.0, gt=0)  # <=0 would disable pacing -> reject at load
 
     model_config = ConfigDict(extra="forbid")
 

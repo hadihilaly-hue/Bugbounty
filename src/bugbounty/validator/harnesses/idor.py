@@ -195,7 +195,8 @@ class IdorHarness(ProofHarness):
                 )
 
             def _get(label: str, headers: dict[str, str]) -> Any:
-                r = client.get(victim_url, headers=headers)
+                # required_headers win so per-request auth headers can't erase attribution.
+                r = client.get(victim_url, headers={**headers, **(target.required_headers or {})})
                 evidence.append(
                     Evidence(
                         kind="http",

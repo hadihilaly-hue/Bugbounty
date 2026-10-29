@@ -126,3 +126,94 @@ def test_proof_refuses_unfilled_attribution_header(tmp_path):
         IdorHarness(transport=httpx.MockTransport(lambda r: httpx.Response(200))).run(
             _idor_candidate(victim), target, Config(dry_run=True)
         )
+
+
+def test_rate_limit_rejects_nonpositive_rps():
+    from bugbounty.scope import RateLimit
+
+    with pytest.raises(ValidationError):
+        RateLimit(per_host_rps=0)
+    with pytest.raises(ValidationError):
+        RateLimit(per_host_rps=-1)
+
+
+def test_engine_refuses_unfilled_attribution_for_real_target(tmp_path):
+    """Central guard: a direct Validator.validate against a real target whose
+    required header is a placeholder must not run any harness."""
+    from bugbounty.validator import Validator
+
+    target = _nebius_like_target(tmp_path, "YOUR_H1_USERNAME")
+    cand = _idor_candidate("https://app.test/obj/1")
+    res = Validator(Config(dry_run=True)).validate(cand, target)
+    assert res.status is ValidationStatus.UNCONFIRMED
+    assert "unfilled" in res.reason or "placeholder" in res.reason
+
+
+def test_candidate_header_cannot_erase_required_attribution(tmp_path):
+    """A proof step that sets X-HackerOne-Research must not override the validated
+    client default -- required_headers win last."""
+    from bugbounty.scope import Platform, Target
+    from bugbounty.validator.harnesses.httppoc import HttpPocHarness
+
+    seen: list[str | None] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.headers.get("x-hackerone-research"))
+        return httpx.Response(200, text="ok")
+
+    target = Target(
+        name="Nebius AI VDP",
+        platform=Platform.HACKERONE,
+        safe_harbor_url="https://hackerone.com/nebius_ai_vdp",
+        in_scope=["app.test"],
+        dry_run=True,
+        required_headers={"X-HackerOne-Research": "realuser"},
+    )
+    cand = Candidate(
+        id="neb-poc",
+        target_name="Nebius AI VDP",
+        vuln_class=VulnClass.AUTH,
+        title="poc",
+        url="https://app.test/x",
+        host="app.test",
+        params={
+            "requests": [
+                {
+                    "name": "one",
+                    "method": "GET",
+                    "url": "https://app.test/x",
+                    "headers": {"X-HackerOne-Research": "attacker-spoof"},
+                }
+            ],
+            "oracle": {"type": "status", "value": 200, "on": "one"},
+        },
+    )
+    HttpPocHarness(VulnClass.AUTH, transport=httpx.MockTransport(handler)).run(
+        cand, target, Config(dry_run=True)
+    )
+    assert seen == ["realuser"]  # the candidate's spoofed value did not win
+
+
+def test_xss_refuses_real_target_with_required_headers(tmp_path):
+    from bugbounty.scope import Platform, Target
+    from bugbounty.validator.harnesses.xss import XssHarness
+
+    target = Target(
+        name="Nebius AI VDP",
+        platform=Platform.HACKERONE,
+        safe_harbor_url="https://hackerone.com/nebius_ai_vdp",
+        in_scope=["app.test"],
+        dry_run=True,
+        required_headers={"X-HackerOne-Research": "realuser"},
+    )
+    cand = Candidate(
+        id="neb-xss",
+        target_name="Nebius AI VDP",
+        vuln_class=VulnClass.XSS,
+        title="xss",
+        url="https://app.test/?q={NONCE}",
+        host="app.test",
+        params={"expect_marker": "{NONCE}"},
+    )
+    with pytest.raises(HarnessUnavailable, match="not yet enforced"):
+        XssHarness().run(cand, target, Config(dry_run=True))

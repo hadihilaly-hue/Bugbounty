@@ -384,6 +384,7 @@ class HttpPocHarness(ProofHarness):
                 base_url=origin_base(requests[0]["url"]),
                 transport=self._transport,
                 headers=(target.required_headers or None),
+                per_host_rps=(target.rate_limit.per_host_rps if target.rate_limit else None),
             )
 
         steps: list[dict] = []
@@ -406,7 +407,12 @@ class HttpPocHarness(ProofHarness):
                 req = _substitute(raw, ctx)
                 method = req.get("method", "GET").upper()
                 sess_headers = session.headers_for(req["url"]) if session else {}
-                merged_headers = {**sess_headers, **(req.get("headers") or {})}
+                # required_headers win last so a candidate step can't erase attribution.
+                merged_headers = {
+                    **sess_headers,
+                    **(req.get("headers") or {}),
+                    **(target.required_headers or {}),
+                }
                 _t0 = time.perf_counter()
                 resp = client.request(
                     method,

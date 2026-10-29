@@ -21,7 +21,7 @@ import yaml
 
 from ..config import Config
 from ..scope import LoginSpec, TargetAuth
-from .pacing import build_client
+from .pacing import PacingConfig, build_client
 
 
 class AuthError(Exception):
@@ -154,6 +154,7 @@ class SessionManager:
         client: httpx.Client | None = None,
         mfa_required: bool = False,
         headers: dict[str, str] | None = None,
+        per_host_rps: float | None = None,
     ) -> None:
         self.login = login or LoginSpec()
         self.config = config or Config()
@@ -162,7 +163,11 @@ class SessionManager:
         self._pinned_origin: tuple[str, str, int] | None = None
         # follow_redirects=False so we can read Set-Cookie and spot login bounces.
         self.client = client or build_client(
-            self.config, base_url=base_url, follow_redirects=False, headers=headers
+            self.config,
+            pacing=PacingConfig.from_config(self.config, per_host_rps=per_host_rps),
+            base_url=base_url,
+            follow_redirects=False,
+            headers=headers,
         )
         self.cookies: dict[str, str] = {}
         self.bearer: str | None = None

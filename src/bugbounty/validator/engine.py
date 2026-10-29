@@ -9,7 +9,7 @@ CONFIRMED.
 from __future__ import annotations
 
 from ..config import Config
-from ..scope import Target
+from ..scope import Platform, Target
 from .base import HarnessUnavailable, ProofHarness
 from .models import Candidate, ValidationResult, ValidationStatus, VulnClass
 
@@ -56,6 +56,18 @@ class Validator:
         return result
 
     def validate(self, candidate: Candidate, target: Target) -> ValidationResult:
+        # Attribution backstop (covers EVERY harness + direct validate() calls):
+        # never run a proof against a real (non-SELF) target whose required
+        # headers are still unfilled/placeholder -- no un-attributed traffic.
+        if target.platform is not Platform.SELF:
+            missing = target.unfilled_required_headers()
+            if missing:
+                return _result(
+                    candidate,
+                    ValidationStatus.UNCONFIRMED,
+                    f"refusing: required header(s) {missing} are unfilled/placeholder "
+                    f"for real target {target.name!r}; fill them before any proof",
+                )
         harness = self.harnesses.get(candidate.vuln_class)
         if harness is None:
             return _result(
