@@ -28,6 +28,14 @@ from bugbounty.validator.harnesses.httppoc import (
 from bugbounty.validator.models import Candidate, ValidationStatus, VulnClass
 
 
+@pytest.fixture(autouse=True)
+def _no_pacing(monkeypatch):
+    # These suites verify oracle/session logic, not politeness. Disable per-host
+    # pacing so the now-paced proof client adds no real sleeps here; pacing has
+    # its own coverage in tests/test_proof_harness_pacing.py.
+    monkeypatch.setenv("BB_PER_HOST_RPS", "0")
+
+
 def _b64(obj: dict) -> str:
     return base64.urlsafe_b64encode(json.dumps(obj).encode()).rstrip(b"=").decode()
 

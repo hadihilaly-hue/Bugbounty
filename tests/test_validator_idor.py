@@ -17,6 +17,15 @@ from bugbounty.validator.base import HarnessUnavailable
 from bugbounty.validator.harnesses.idor import IdorHarness, evaluate_idor
 from bugbounty.validator.models import Candidate, ValidationStatus, VulnClass
 
+
+@pytest.fixture(autouse=True)
+def _no_pacing(monkeypatch):
+    # These suites verify oracle/session logic, not politeness. Disable per-host
+    # pacing so the now-paced proof client adds no real sleeps here; pacing has
+    # its own coverage in tests/test_proof_harness_pacing.py.
+    monkeypatch.setenv("BB_PER_HOST_RPS", "0")
+
+
 MARKER = "Victim-Secret-Melon-9f3a"
 A_EMAIL = "attacker_a@test.local"
 B_EMAIL = "victim_b@test.local"

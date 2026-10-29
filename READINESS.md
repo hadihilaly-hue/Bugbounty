@@ -140,10 +140,9 @@ the handed-in session is refused off its pinned origin (the #11 fix holds for
 handed-in sessions too).
 **Still weak:** full OAuth/SSO redirect dances, WebAuthn/complex MFA, and
 aggressive anti-bot (CAPTCHA / device fingerprinting) are not automated — that is
-exactly what the manual handoff is for. `SessionManager` logins go through the
-paced `net.build_client`, but the harness *request loops* (`idor`/`httppoc`)
-still open their own un-paced httpx client for the proof requests themselves —
-session-aware now, not yet pace-aware.
+exactly what the manual handoff is for. Both `SessionManager` logins and the
+harness proof *request loops* (`idor`/`httppoc`) now go through the paced
+`net.build_client`, so validator traffic is both session-aware and pace-aware.
 
 ### CLOSED + verified — Rate limiting / per-host pacing
 `src/bugbounty/net/pacing.py` adds per-host pacing + backoff on top of the global
@@ -155,10 +154,12 @@ exponential backoff, with a host-wide cooldown so concurrent requests respect it
 global per-run request/concurrency/USD/wall-clock caps and the kill switch still
 apply on top.
 **Verified:** unit tests for per-host spacing, host independence, shared clock,
-`Retry-After` parsing, backoff, and give-up-after-max-retries.
-**Still weak:** the validator proof harnesses open their own httpx clients, so
-their request path isn't paced yet — point them at `net.build_client` once that
-branch lands. No adaptive throttling beyond the fixed per-host rate.
+`Retry-After` parsing, backoff, and give-up-after-max-retries — plus a test that
+the `idor`/`httppoc` proof requests themselves register on the shared host clock
+(i.e. they go through `net.build_client`), and that the time-based SQLi oracle
+measures *server* time (`bb_server_elapsed`), never the per-host pacing wait.
+**Still weak:** no adaptive throttling beyond the fixed per-host rate; a real
+WAF/CDN may still block, tarpit, or fingerprint regardless of how polite we are.
 
 ### RESOLVED — Recon / scope redirect safety
 Previously `recon_http` followed redirects without checking the destination, so
@@ -226,13 +227,12 @@ friction and the freshness/writes of the handed-in session move up.
    and missing-auth/exposure. CSRF, live SSRF, JWT/alg-confusion, and
    business-logic bugs still come back UNCONFIRMED → a human-triage backlog and a
    confirmed-recall well below the sandbox figures.
-2. **Rate limiting / WAF reality + unpaced harness requests.** The fixed 1 req/s
-   + 429 backoff is polite but naive against a real WAF/CDN that may block,
-   tarpit, or fingerprint; and the `idor`/`httppoc` proof **request loops** still
-   open their own **unpaced** httpx client (session-aware now, but not routed
-   through `net.build_client`), so those requests bypass per-host pacing —
-   risking tripped protection mid-proof. Wire the harness request path through
-   `net.build_client` next.
+2. **Rate limiting / WAF reality.** The `idor`/`httppoc` proof request loops now
+   route through the paced `net.build_client` (verified), so validator traffic is
+   per-host rate limited and 429-aware like recon. What remains is that the fixed
+   1 req/s + capped backoff is still *naive* against a real WAF/CDN that may
+   block, tarpit, or fingerprint regardless of politeness — there is no adaptive
+   throttling or block detection yet.
 3. **Session lifecycle for post-auth: capture friction, expiry, and writes.** The
    manual handoff works but is manual: a human must capture a browser session per
    account, and it goes stale — we now surface an expired handed-in session
@@ -245,9 +245,11 @@ The two HIGH gaps (auth/session, rate limiting) and the recon/scope redirect fix
 are closed and verified on current combined `main` (post #12/#13/#14) with the
 sandboxes actually stood up: precision 1.00 and fp_rate 0.00 across all three,
 and the session handoff exercised by a graded auth-gated case. Before a real program: (1) the validator
-proof harnesses are now **session-aware** (handed-in session carried in,
-origin-pinned) — the remaining half is routing their proof *request loops*
-through `net.build_client` so they are **paced** too; (2) keep `DRY_RUN` on for a first
+proof harnesses are now both **session-aware** (handed-in session carried in,
+origin-pinned) and **pace-aware** (proof request loops routed through
+`net.build_client`); the finder also targets a current, configurable Anthropic
+model (`BB_ANTHROPIC_MODEL`, default `claude-sonnet-5-5`) with a key-gated
+live-call check, so it can't silently rot to a retired model; (2) keep `DRY_RUN` on for a first
 **supervised** pass (recon + static only), clearing the gate only for a single
 known endpoint you watch live; (3) treat unproven-class findings as manual
 triage, not misses; (4) use the manual handed-in-session path for

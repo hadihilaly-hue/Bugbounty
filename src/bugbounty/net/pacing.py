@@ -157,7 +157,11 @@ class PacedTransport(httpx.BaseTransport):
                 sleep=self._sleep,
                 now=self._now,
             )
+            _t0 = self._now()
             resp = self._inner.handle_request(request)
+            # Server response time only -- the per-host wait in acquire() above is
+            # politeness, not latency, so a timing oracle must not count it.
+            resp.extensions["bb_server_elapsed"] = self._now() - _t0
             if resp.status_code != 429:
                 return resp
             retry = retry_after_seconds(resp.headers.get("retry-after"))

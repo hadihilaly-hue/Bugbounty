@@ -343,7 +343,7 @@ class HttpPocHarness(ProofHarness):
 
     def run(self, candidate: Candidate, target: Target, config: Config) -> ValidationResult:
         try:
-            import httpx
+            from ...net import build_client
         except ImportError as exc:  # pragma: no cover
             raise HarnessUnavailable("httpx not installed (pip install .[dynamic])") from exc
 
@@ -380,10 +380,11 @@ class HttpPocHarness(ProofHarness):
 
         steps: list[dict] = []
         evidence: list[Evidence] = []
-        client_kw = {"timeout": 15.0, "follow_redirects": True}
-        if self._transport is not None:
-            client_kw["transport"] = self._transport
-        with httpx.Client(**client_kw) as client:
+        # Route through the paced client so every proof request to the target is
+        # per-host rate limited and 429-aware (shared timeline with recon/session).
+        with build_client(
+            config, inner=self._transport, timeout=15.0, follow_redirects=True
+        ) as client:
             for i, raw in enumerate(requests):
                 req = _substitute(raw, ctx)
                 method = req.get("method", "GET").upper()
@@ -397,7 +398,9 @@ class HttpPocHarness(ProofHarness):
                     content=(req["body"] if isinstance(req.get("body"), str) else None),
                     json=(req["body"] if isinstance(req.get("body"), dict) else None),
                 )
-                elapsed = time.perf_counter() - _t0
+                # Prefer the transport's server-only timing (excludes the per-host
+                # pacing wait); fall back to wall time if unavailable.
+                elapsed = resp.extensions.get("bb_server_elapsed", time.perf_counter() - _t0)
                 if (
                     session
                     and session.is_manual
