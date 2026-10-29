@@ -6,7 +6,8 @@ They now go through net.build_client, whose PacedTransport draws on the one
 process-wide host clock. These tests drive the real harnesses over an in-memory
 transport and assert (a) the target host is registered on that shared clock --
 i.e. the proof requests really went through the paced path -- and (b) the timing
-oracle still measures server time, not the pacing wait.
+timing oracle still subtracts only the per-host pacing wait, so politeness
+delay never counts as server latency.
 """
 
 from __future__ import annotations
@@ -112,8 +113,9 @@ def test_idor_requests_go_through_the_paced_client(tmp_path, monkeypatch):
 
 def test_timing_oracle_excludes_pacing_wait(monkeypatch):
     """A fast endpoint must stay REJECTED even though the per-host pacing wait
-    (0.2s) exceeds the 0.15s timing threshold: the oracle reads server time
-    (bb_server_elapsed), not the pacing stall."""
+    (0.2s) exceeds the 0.15s timing threshold: the oracle subtracts the pacing
+    wait (bb_pacing_wait) from the measured request time, so the stall doesn't
+    count as server latency."""
     monkeypatch.setenv("BB_PER_HOST_RPS", "5")
     monkeypatch.setenv("BB_PACING_JITTER", "0")
     host = _host()

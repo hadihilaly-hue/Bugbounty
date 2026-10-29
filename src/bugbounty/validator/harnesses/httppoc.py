@@ -398,9 +398,12 @@ class HttpPocHarness(ProofHarness):
                     content=(req["body"] if isinstance(req.get("body"), str) else None),
                     json=(req["body"] if isinstance(req.get("body"), dict) else None),
                 )
-                # Prefer the transport's server-only timing (excludes the per-host
-                # pacing wait); fall back to wall time if unavailable.
-                elapsed = resp.extensions.get("bb_server_elapsed", time.perf_counter() - _t0)
+                # Full request time (headers AND body) minus the per-host pacing
+                # wait: politeness delay must not count toward a timing oracle, but
+                # a body-delayed blind-SQLi response still must.
+                elapsed = max(
+                    0.0, (time.perf_counter() - _t0) - resp.extensions.get("bb_pacing_wait", 0.0)
+                )
                 if (
                     session
                     and session.is_manual

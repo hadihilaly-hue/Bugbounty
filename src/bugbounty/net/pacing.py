@@ -149,20 +149,22 @@ class PacedTransport(httpx.BaseTransport):
     def handle_request(self, request: httpx.Request) -> httpx.Response:
         host = request.url.host or ""
         attempt = 0
+        paced_wait = 0.0  # total time spent waiting for this host's slot / cooldown
         while True:
-            self._clock.acquire(
+            paced_wait += self._clock.acquire(
                 host,
                 min_interval=self._pacing.min_interval,
                 jitter=self._pacing.jitter,
                 sleep=self._sleep,
                 now=self._now,
             )
-            _t0 = self._now()
             resp = self._inner.handle_request(request)
-            # Server response time only -- the per-host wait in acquire() above is
-            # politeness, not latency, so a timing oracle must not count it.
-            resp.extensions["bb_server_elapsed"] = self._now() - _t0
             if resp.status_code != 429:
+                # Record the per-host pacing wait so a caller timing the whole
+                # request (e.g. the blind-SQLi timing oracle) can subtract our
+                # politeness delay. We expose the wait, not a server duration, so
+                # the caller's own full-response timing (headers AND body) is kept.
+                resp.extensions["bb_pacing_wait"] = paced_wait
                 return resp
             retry = retry_after_seconds(resp.headers.get("retry-after"))
             if retry is None:
@@ -174,6 +176,7 @@ class PacedTransport(httpx.BaseTransport):
             # have no retries left and are about to hand the 429 back.
             self._clock.block(host, retry, now=self._now)
             if attempt >= self._pacing.max_retries_429:
+                resp.extensions["bb_pacing_wait"] = paced_wait
                 return resp
             attempt += 1
 
