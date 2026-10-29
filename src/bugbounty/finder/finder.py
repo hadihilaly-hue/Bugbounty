@@ -94,7 +94,9 @@ class Finder:
         notes: list[str] = []
         if recon is None:
             recon = (
-                recon_http(base_url, scope=scope) if base_url else Recon(base_url=base_url or "")
+                recon_http(base_url, config=self.config, scope=scope)
+                if base_url
+                else Recon(base_url=base_url or "")
             )
         notes.extend(recon.notes)
 

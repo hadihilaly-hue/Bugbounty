@@ -60,3 +60,32 @@ def test_no_header_without_a_handle(monkeypatch):
     client = build_client(Config(), inner=_record(seen))
     client.get("http://localhost:3000/")
     assert "x-hackerone-research" not in seen[0]
+
+
+def test_finder_recon_uses_explicit_config_without_env(monkeypatch):
+    """Finder.find must forward its own Config to recon, not rely on env."""
+    monkeypatch.delenv("BB_H1_USERNAME", raising=False)
+    from bugbounty import net as _net
+    from bugbounty.finder.finder import Finder
+    from bugbounty.scope import Target
+
+    seen: list[dict[str, str]] = []
+    real_build_client = _net.build_client
+
+    def _patched(config=None, **kwargs):
+        kwargs["inner"] = _record(seen)
+        return real_build_client(config, **kwargs)
+
+    monkeypatch.setattr("bugbounty.net.build_client", _patched)
+
+    target = Target(
+        name="t",
+        platform="vdp",
+        safe_harbor_url="https://example.com",
+        in_scope=["console.nebius.com"],
+    )
+    Finder(Config(research_username="alice")).find(
+        target, base_url="https://console.nebius.com/", use_llm=False
+    )
+    assert seen, "recon made no request"
+    assert seen[0].get("x-hackerone-research") == "alice"
