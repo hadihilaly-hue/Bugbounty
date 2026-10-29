@@ -217,3 +217,42 @@ def test_xss_refuses_real_target_with_required_headers(tmp_path):
     )
     with pytest.raises(HarnessUnavailable, match="not yet enforced"):
         XssHarness().run(cand, target, Config(dry_run=True))
+
+
+def test_poc_renders_effective_required_header_not_candidate_spoof(tmp_path):
+    """A confirmed HTTP proof's PoC must reproduce the request actually sent:
+    required_headers (winning) appear in the rendered curl, not the spoof."""
+    from bugbounty.scope import Platform, Target
+    from bugbounty.validator.harnesses.httppoc import HttpPocHarness
+
+    target = Target(
+        name="Nebius AI VDP",
+        platform=Platform.HACKERONE,
+        safe_harbor_url="https://hackerone.com/nebius_ai_vdp",
+        in_scope=["app.test"],
+        dry_run=True,
+        required_headers={"X-HackerOne-Research": "realuser"},
+    )
+    cand = Candidate(
+        id="neb-poc2",
+        target_name="Nebius AI VDP",
+        vuln_class=VulnClass.AUTH,
+        title="poc",
+        url="https://app.test/x",
+        host="app.test",
+        params={
+            "requests": [
+                {
+                    "name": "one",
+                    "method": "GET",
+                    "url": "https://app.test/x",
+                    "headers": {"X-HackerOne-Research": "attacker-spoof"},
+                }
+            ],
+            "oracle": {"type": "status", "value": 200, "on": "one"},
+        },
+    )
+    r = HttpPocHarness(
+        VulnClass.AUTH, transport=httpx.MockTransport(lambda rq: httpx.Response(200, text="ok"))
+    ).run(cand, target, Config(dry_run=True))
+    assert "realuser" in r.poc and "attacker-spoof" not in r.poc

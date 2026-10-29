@@ -466,7 +466,18 @@ class HttpPocHarness(ProofHarness):
                 )
 
         proved = evaluate_oracle(oracle, steps, oob=self._oob)
-        poc = _poc_script(requests, oob_token)
+        # Render the PoC with required_headers merged in (winning), so the emitted
+        # command reproduces the request the harness actually sent -- not the
+        # candidate's conflicting value.
+        poc_requests = (
+            [
+                {**r, "headers": {**(r.get("headers") or {}), **target.required_headers}}
+                for r in requests
+            ]
+            if target.required_headers
+            else requests
+        )
+        poc = _poc_script(poc_requests, oob_token)
         if proved:
             return ValidationResult(
                 candidate_id=candidate.id,
