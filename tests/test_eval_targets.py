@@ -153,3 +153,20 @@ def test_crapi_merges_login_and_session_metrics():
     merged = _merge(Metrics(tp=3, fp=0, tn=2, fn=1), Metrics(tp=1))
     assert (merged.tp, merged.fp, merged.tn, merged.fn) == (4, 0, 2, 1)
     assert merged.precision == 1.0 and merged.fp_rate == 0.0
+
+
+def test_crapi_write_secret_replaces_symlink_not_follows_it(tmp_path):
+    """A pre-planted symlink at the creds path must be replaced, not followed:
+    live tokens never land in an attacker-chosen destination, and the result is
+    0600. (Hardening for Devin Review SEC finding on the #15 session file.)"""
+    from bugbounty.jobs.eval_targets.crapi import _write_secret
+
+    victim = tmp_path / "victim.txt"
+    victim.write_text("do-not-touch")
+    creds = tmp_path / "crapi-eval-session.yaml"
+    creds.symlink_to(victim)
+    _write_secret(str(creds), {"account_a": {"bearer_token": "SEKRET-TOKEN"}})
+    assert victim.read_text() == "do-not-touch"  # symlink target untouched
+    assert not creds.is_symlink()  # the symlink name was replaced
+    assert "SEKRET-TOKEN" in creds.read_text()
+    assert (creds.stat().st_mode & 0o777) == 0o600
