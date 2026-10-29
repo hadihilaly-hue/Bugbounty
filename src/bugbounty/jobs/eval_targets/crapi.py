@@ -17,6 +17,9 @@ Local sandbox only; dry-run gate cleared for this local target.
 
 from __future__ import annotations
 
+import contextlib
+import os
+import tempfile
 import uuid
 from pathlib import Path
 
@@ -42,12 +45,24 @@ def _merge(a: Metrics, b: Metrics) -> Metrics:
 
 
 def _write_secret(path: str, data: dict) -> None:
-    """Write a credentials file readable only by the current user (0600): it
-    holds live passwords/bearer tokens, so other local users must not read it."""
+    """Write a credentials file atomically, 0600, without following a symlink.
+
+    It holds live passwords/bearer tokens, so a pre-planted symlink at ``path``
+    must never redirect the write and no other local user may read the result.
+    ``mkstemp`` creates a fresh 0600 file in the same directory; ``os.replace``
+    then atomically renames it onto ``path`` -- which replaces a symlink at that
+    name rather than following it to its target."""
     p = Path(path)
-    p.touch(mode=0o600, exist_ok=True)
-    p.chmod(0o600)
-    p.write_text(yaml.safe_dump(data))
+    p.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=str(p.parent), prefix=".crapi-creds-", suffix=".yaml")
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(yaml.safe_dump(data))
+        os.replace(tmp, p)
+    except BaseException:
+        with contextlib.suppress(FileNotFoundError):
+            os.unlink(tmp)
+        raise
 
 
 class CrapiTarget(EvalTarget):
@@ -249,7 +264,6 @@ class CrapiTarget(EvalTarget):
                 self.name, False, note="crAPI signup/login failed; stack may still be seeding"
             )
         accts, session_accts = prepared
-        Path(_CREDS).parent.mkdir(parents=True, exist_ok=True)
         _write_secret(_CREDS, accts)
         _write_secret(_SESSION_CREDS, session_accts)
 

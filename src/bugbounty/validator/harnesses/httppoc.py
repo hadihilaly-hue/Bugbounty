@@ -343,7 +343,7 @@ class HttpPocHarness(ProofHarness):
 
     def run(self, candidate: Candidate, target: Target, config: Config) -> ValidationResult:
         try:
-            import httpx
+            from ...net import build_client
         except ImportError as exc:  # pragma: no cover
             raise HarnessUnavailable("httpx not installed (pip install .[dynamic])") from exc
 
@@ -380,10 +380,11 @@ class HttpPocHarness(ProofHarness):
 
         steps: list[dict] = []
         evidence: list[Evidence] = []
-        client_kw = {"timeout": 15.0, "follow_redirects": True}
-        if self._transport is not None:
-            client_kw["transport"] = self._transport
-        with httpx.Client(**client_kw) as client:
+        # Route through the paced client so every proof request to the target is
+        # per-host rate limited and 429-aware (shared timeline with recon/session).
+        with build_client(
+            config, inner=self._transport, timeout=15.0, follow_redirects=True
+        ) as client:
             for i, raw in enumerate(requests):
                 req = _substitute(raw, ctx)
                 method = req.get("method", "GET").upper()
@@ -397,7 +398,15 @@ class HttpPocHarness(ProofHarness):
                     content=(req["body"] if isinstance(req.get("body"), str) else None),
                     json=(req["body"] if isinstance(req.get("body"), dict) else None),
                 )
-                elapsed = time.perf_counter() - _t0
+                # Full request time (headers AND body) minus the per-host pacing
+                # wait: politeness delay must not count toward a timing oracle, but
+                # a body-delayed blind-SQLi response still must. Sum the wait across
+                # every hop (redirects) -- client.request returns only the final
+                # response, so earlier hops' waits live on resp.history.
+                paced = resp.extensions.get("bb_pacing_wait", 0.0) + sum(
+                    h.extensions.get("bb_pacing_wait", 0.0) for h in resp.history
+                )
+                elapsed = max(0.0, (time.perf_counter() - _t0) - paced)
                 if (
                     session
                     and session.is_manual

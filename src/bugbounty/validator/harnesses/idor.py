@@ -28,7 +28,7 @@ from typing import Any
 import yaml
 
 from ...config import Config
-from ...net import SessionManager
+from ...net import SessionManager, build_client
 from ...net.session import Account, _cookie_list_to_dict
 from ...scope import Target
 from ..base import HarnessUnavailable, ProofHarness
@@ -156,11 +156,6 @@ class IdorHarness(ProofHarness):
         return str(token)
 
     def run(self, candidate: Candidate, target: Target, config: Config) -> ValidationResult:
-        try:
-            import httpx
-        except ImportError as exc:  # pragma: no cover
-            raise HarnessUnavailable("httpx not installed (pip install .[dynamic])") from exc
-
         accounts = _load_accounts(target)
         login = candidate.params.get("login")
         victim_url = candidate.params.get("victim_url")
@@ -169,12 +164,12 @@ class IdorHarness(ProofHarness):
             raise HarnessUnavailable("candidate needs victim_url and victim_marker params")
         a_raw, b_raw = accounts["account_a"], accounts["account_b"]
 
-        client_kw: dict[str, Any] = {"timeout": 15.0, "follow_redirects": True}
-        if self._transport is not None:
-            client_kw["transport"] = self._transport
-
         evidence: list[Evidence] = []
-        with httpx.Client(**client_kw) as client:
+        # Route through the paced client so every proof request to the target is
+        # per-host rate limited and 429-aware (shared timeline with recon/session).
+        with build_client(
+            config, inner=self._transport, timeout=15.0, follow_redirects=True
+        ) as client:
             headers_a, key_a = self._auth_for(a_raw, login, victim_url, config, client)
             headers_b, key_b = self._auth_for(b_raw, login, victim_url, config, client)
             if key_a == key_b:

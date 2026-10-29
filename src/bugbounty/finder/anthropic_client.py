@@ -10,7 +10,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
-DEFAULT_MODEL = os.environ.get("BB_ANTHROPIC_MODEL", "claude-haiku-5-5")
+DEFAULT_MODEL = os.environ.get("BB_ANTHROPIC_MODEL", "claude-sonnet-5-5")
 
 
 def compute_usd(
@@ -31,9 +31,9 @@ class LlmResult:
 
 
 class AnthropicReasoner:
-    def __init__(self, model: str | None = None, max_tokens: int = 4096) -> None:
+    def __init__(self, model: str | None = None, max_tokens: int | None = None) -> None:
         self.model = model or DEFAULT_MODEL
-        self.max_tokens = max_tokens
+        self.max_tokens = max_tokens or int(os.environ.get("BB_ANTHROPIC_MAX_TOKENS", "4096"))
         self.price_in = float(os.environ.get("BB_PRICE_IN_PER_MTOK", "3.0"))
         self.price_out = float(os.environ.get("BB_PRICE_OUT_PER_MTOK", "15.0"))
 
