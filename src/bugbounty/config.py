@@ -47,6 +47,13 @@ def _env_float(name: str, default: float) -> float:
     return float(raw)
 
 
+def _env_str(name: str, default: str | None) -> str | None:
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return default
+    return raw.strip()
+
+
 @dataclass(frozen=True)
 class BudgetCaps:
     """Hard per-run ceilings. The orchestrator aborts a run when any is hit."""
@@ -85,7 +92,24 @@ class Config:
     backoff_max_seconds: float = field(
         default_factory=lambda: _env_float("BB_BACKOFF_MAX_SECONDS", 30.0)
     )
+    # Research attribution: when set, every outbound request to a target carries
+    # this header so the program can tie the traffic to the authorized researcher
+    # (e.g. HackerOne's X-HackerOne-Research). Set BB_H1_USERNAME to your handle.
+    research_header: str = field(
+        default_factory=lambda: _env_str("BB_RESEARCH_HEADER", "X-HackerOne-Research") or ""
+    )
+    research_username: str | None = field(default_factory=lambda: _env_str("BB_H1_USERNAME", None))
     budget: BudgetCaps = field(default_factory=BudgetCaps)
+
+    def research_attribution(self) -> tuple[str, str] | None:
+        """The (header, value) attribution pair to stamp on every request.
+
+        Returns ``None`` when no researcher handle is configured, so local
+        sandboxes keep sending no attribution header.
+        """
+        if self.research_username and self.research_header:
+            return (self.research_header, self.research_username)
+        return None
 
     def active_payloads_allowed(self, target_dry_run: bool) -> bool:
         """Active exploit payloads are allowed only when every gate is open.

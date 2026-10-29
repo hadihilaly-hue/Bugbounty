@@ -45,6 +45,31 @@ targets:
     notes: "Local CSRF+cookie-session practice target (admin/password). Local only."
     dry_run: false
 
+  # Target #2 — Nebius AI VDP (HackerOne). REAL external program. Recon/reasoning
+  # only: dry_run stays true so no active payload can ever be sent here.
+  - name: "Nebius AI VDP"
+    platform: "vdp"
+    safe_harbor_url: "https://hackerone.com/nebius"
+    ai_policy: "unknown"              # not verified; treat conservatively
+    pays_cash: false                  # vulnerability disclosure program
+    in_scope:
+      - "console.nebius.com"          # the in-scope console host, GA services only
+    out_of_scope:
+      - "testing.*"                   # non-production environments are out of scope
+      - "staging.*"
+      - "dev.*"
+      - "beta.*"
+      - "preview.*"
+      - "*.testing.nebius.com"
+      - "*.staging.nebius.com"
+      - "*.dev.nebius.com"
+    notes: >
+      GA services on console.nebius.com only. Scope is host-based, so GA-vs-preview
+      must be respected by hand within the host. testing./staging./dev./beta. and
+      the like are fail-closed (nothing but console.nebius.com matches in_scope).
+      dry_run stays true: recon + finder reasoning, never active validation.
+    dry_run: true
+
   # Example real-program entry (commented; you paste in programs you choose).
   # - name: "Example Program"
   #   platform: "hackerone"

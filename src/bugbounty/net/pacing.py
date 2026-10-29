@@ -137,16 +137,23 @@ class PacedTransport(httpx.BaseTransport):
         pacing: PacingConfig,
         *,
         clock: _HostClock | None = None,
+        attribution: tuple[str, str] | None = None,
         sleep=time.sleep,
         now=time.monotonic,
     ) -> None:
         self._inner = inner
         self._pacing = pacing
         self._clock = clock if clock is not None else shared_clock(pacing)
+        self._attribution = attribution
         self._sleep = sleep
         self._now = now
 
     def handle_request(self, request: httpx.Request) -> httpx.Response:
+        # Attribution rides on every request (recon, logins, proofs) so the
+        # program can tie all harness traffic to the authorized researcher. We
+        # set, not add, so our handle is the only value even after a retry.
+        if self._attribution is not None:
+            request.headers[self._attribution[0]] = self._attribution[1]
         host = request.url.host or ""
         attempt = 0
         paced_wait = 0.0  # total time spent waiting for this host's slot / cooldown
@@ -202,7 +209,10 @@ def build_client(
     """An httpx.Client whose every request is paced per host and 429-aware."""
     pacing = pacing or PacingConfig.from_config(config)
     inner = inner if inner is not None else httpx.HTTPTransport(verify=verify)
-    transport = PacedTransport(inner, pacing, clock=clock, sleep=sleep, now=now)
+    attribution = (config or Config()).research_attribution()
+    transport = PacedTransport(
+        inner, pacing, clock=clock, attribution=attribution, sleep=sleep, now=now
+    )
     return httpx.Client(
         transport=transport,
         base_url=base_url,
