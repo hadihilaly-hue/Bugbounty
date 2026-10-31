@@ -13,7 +13,7 @@ from urllib.parse import urlparse
 
 from ..config import Config
 from ..recon.http import Recon, recon_http
-from ..scope import Target
+from ..scope import Platform, Target
 from ..signal.base import Signal, SignalUnavailable
 from ..validator import Candidate
 from .anthropic_client import AnthropicReasoner
@@ -94,7 +94,13 @@ class Finder:
         notes: list[str] = []
         if recon is None:
             recon = (
-                recon_http(base_url, config=self.config, scope=scope)
+                recon_http(
+                    base_url,
+                    config=self.config,
+                    scope=scope,
+                    headers=(target.required_headers or None),
+                    per_host_rps=(target.rate_limit.per_host_rps if target.rate_limit else None),
+                )
                 if base_url
                 else Recon(base_url=base_url or "")
             )
@@ -108,7 +114,12 @@ class Finder:
                 signals.extend(run_semgrep(code_path))
             except SignalUnavailable as exc:
                 notes.append(f"semgrep skipped: {exc}")
-        if base_url:
+        if base_url and target.platform is not Platform.SELF and target.required_headers:
+            notes.append(
+                "nuclei skipped: the scanner can't carry this target's required "
+                "attribution headers, so it must not scan a real program"
+            )
+        elif base_url:
             try:
                 from ..signal.nuclei import run_nuclei
 

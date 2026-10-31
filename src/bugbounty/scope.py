@@ -8,12 +8,13 @@ nothing is out of scope by default (fail closed).
 from __future__ import annotations
 
 import fnmatch
+import re
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 
 import yaml
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class AiPolicy(StrEnum):
@@ -55,12 +56,31 @@ class LoginSpec(BaseModel):
     mfa_status: int | None = None  # status that means MFA is required
     mfa_required: bool = False  # declared up front: never attempt headless login
 
+    model_config = ConfigDict(extra="forbid")  # unknown keys fail loud, never silently dropped
+
 
 class TargetAuth(BaseModel):
     multi_account: bool = False
     creds_ref: str | None = None
     login: LoginSpec | None = None
     mfa_required: bool = False  # declared; the session manager surfaces, never fakes, MFA
+    # 'manual' documents a handed-in-session target (no scripted login); the
+    # manual path is actually driven by the creds file carrying cookies/bearer.
+    mode: str | None = None
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class RateLimit(BaseModel):
+    """Optional per-target politeness override (otherwise the global pace applies)."""
+
+    per_host_rps: float = Field(default=1.0, gt=0)  # <=0 would disable pacing -> reject at load
+
+    model_config = ConfigDict(extra="forbid")
+
+
+# Required-header values that are obviously unfilled templates, not a real value.
+_PLACEHOLDER_RE = re.compile(r"(^$|^YOUR_|^REPLACE|^CHANGE|[<>])", re.IGNORECASE)
 
 
 class Target(BaseModel):
@@ -72,8 +92,24 @@ class Target(BaseModel):
     in_scope: list[str] = Field(default_factory=list)
     out_of_scope: list[str] = Field(default_factory=list)
     auth: TargetAuth = Field(default_factory=TargetAuth)
+    # Headers that MUST ride on every request to this target (e.g. HackerOne's
+    # X-HackerOne-Research attribution). Enforced on recon + proof + session.
+    required_headers: dict[str, str] = Field(default_factory=dict)
+    rate_limit: RateLimit | None = None
     notes: str | None = None
     dry_run: bool = True
+
+    model_config = ConfigDict(extra="forbid")
+
+    def unfilled_required_headers(self) -> list[str]:
+        """Required headers whose value is blank or still a template placeholder.
+
+        Used to refuse touching a real (non-SELF) target before the operator has
+        filled in e.g. their HackerOne username, so we never send un-attributed
+        traffic to an authorized program."""
+        return [
+            k for k, v in self.required_headers.items() if _PLACEHOLDER_RE.search((v or "").strip())
+        ]
 
     @field_validator("safe_harbor_url")
     @classmethod

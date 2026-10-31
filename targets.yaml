@@ -45,31 +45,6 @@ targets:
     notes: "Local CSRF+cookie-session practice target (admin/password). Local only."
     dry_run: false
 
-  # Target #2 — Nebius AI VDP (HackerOne). REAL external program. Recon/reasoning
-  # only: dry_run stays true so no active payload can ever be sent here.
-  - name: "Nebius AI VDP"
-    platform: "vdp"
-    safe_harbor_url: "https://hackerone.com/nebius"
-    ai_policy: "unknown"              # not verified; treat conservatively
-    pays_cash: false                  # vulnerability disclosure program
-    in_scope:
-      - "console.nebius.com"          # the in-scope console host, GA services only
-    out_of_scope:
-      - "testing.*"                   # non-production environments are out of scope
-      - "staging.*"
-      - "dev.*"
-      - "beta.*"
-      - "preview.*"
-      - "*.testing.nebius.com"
-      - "*.staging.nebius.com"
-      - "*.dev.nebius.com"
-    notes: >
-      GA services on console.nebius.com only. Scope is host-based, so GA-vs-preview
-      must be respected by hand within the host. testing./staging./dev./beta. and
-      the like are fail-closed (nothing but console.nebius.com matches in_scope).
-      dry_run stays true: recon + finder reasoning, never active validation.
-    dry_run: true
-
   # Example real-program entry (commented; you paste in programs you choose).
   # - name: "Example Program"
   #   platform: "hackerone"
@@ -87,3 +62,52 @@ targets:
   #     creds_ref: "secrets/example.yaml"
   #   notes: "anything ambiguous to confirm"
   #   dry_run: true
+
+  # Target #2 — first REAL authorized program (HackerOne VDP). dry_run stays true
+  # until a first pass is reviewed. BEFORE any run you must: (1) put your actual
+  # HackerOne username in required_headers.X-HackerOne-Research (the harness
+  # refuses to send traffic while it is the placeholder), and (2) create the
+  # gitignored secrets/nebius.yaml with two accounts you own (handed-in sessions).
+  - name: "Nebius AI VDP"
+    platform: "hackerone"
+    safe_harbor_url: "https://hackerone.com/nebius_ai_vdp"
+    ai_policy: "assisted_ok"       # no AI ban in policy; workflow is human-verified
+    pays_cash: false               # VDP, no reward
+    in_scope:
+      - "console.nebius.com"        # GA services only
+      - "console.eu.nebius.com"     # GA services only
+      - "tokenfactory.nebius.com"
+      - "auth.tokenfactory.nebius.com"
+      - "api.tokenfactory.nebius.com"
+      - "auth.nebius.com"
+      - "sts.nebius.com"
+      - "api.nebius.cloud"          # GA services only
+      - "nebius.com"
+      - "dev.nebius.com"            # dev.nebius.com itself is IN scope
+      - "docs.tokenfactory.nebius.com"
+      - "docs.nebius.com"
+      - "careers.nebius.com"
+      - "status.nebius.com"
+      - "static.nebius.com"
+      - "assets.nebius.com"
+    out_of_scope:
+      # subdomain exclusions for the tokenfactory/auth/console/api.nebius.cloud assets
+      - "testing.*"
+      - "staging.*"
+      - "preprod.*"
+      - "beta.*"
+      - "gamma.*"
+      - "omega.*"
+      - "sandbox.*"
+      - "preview.*"
+      - "trunk.*"
+    required_headers:
+      X-HackerOne-Research: "YOUR_H1_USERNAME"   # <- replace with your HackerOne username
+    auth:
+      multi_account: true
+      creds_ref: "secrets/nebius.yaml"   # gitignored; two accounts YOU own
+      mode: "manual"                      # hand in live session tokens from a real browser
+    rate_limit:
+      per_host_rps: 1      # conservative; policy states none, so be polite
+    notes: "GA services only on console/api. One vuln per report. Do not discuss findings publicly without Nebius consent. Focus: cross-account IDOR/BOLA on the multi-tenant console."
+    dry_run: true          # stays true until first pass reviewed
