@@ -112,14 +112,25 @@ def _get_same_origin(client, url: str, rec: Recon, scope=None):
 
 
 def recon_http(
-    base_url: str, timeout: float = 15.0, max_js: int = 10, config=None, scope=None
+    base_url: str,
+    timeout: float = 15.0,
+    max_js: int = 10,
+    config=None,
+    scope=None,
+    headers: dict[str, str] | None = None,
+    per_host_rps: float | None = None,
 ) -> Recon:
     # Paced per host so recon (which runs even in DRY_RUN) never hammers a target.
+    # required_headers (e.g. HackerOne attribution) ride on every recon request.
     from ..net import build_client
+    from ..net.pacing import PacingConfig
 
     rec = Recon(base_url=base_url)
+    pacing = PacingConfig.from_config(config, per_host_rps=per_host_rps)
     # follow_redirects=False: redirects are vetted per hop against the origin.
-    with build_client(config, timeout=timeout, follow_redirects=False) as client:
+    with build_client(
+        config, pacing=pacing, headers=headers, timeout=timeout, follow_redirects=False
+    ) as client:
         try:
             resp = _get_same_origin(client, base_url, rec, scope)
         except Exception as exc:  # noqa: BLE001 - recon failure is non-fatal

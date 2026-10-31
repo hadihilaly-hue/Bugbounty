@@ -31,7 +31,7 @@ from pathlib import Path
 from typing import Any
 
 from ...config import Config
-from ...scope import Target
+from ...scope import Platform, Target
 from ..base import HarnessUnavailable, ProofHarness
 from ..models import Candidate, Evidence, ValidationResult, ValidationStatus, VulnClass
 
@@ -128,6 +128,11 @@ class XssHarness(ProofHarness):
     sends_active_payload = True
 
     def run(self, candidate: Candidate, target: Target, config: Config) -> ValidationResult:
+        if target.platform is not Platform.SELF and target.required_headers:
+            raise HarnessUnavailable(
+                "required_headers (e.g. HackerOne attribution) are not yet enforced in "
+                "the browser/injection path; refusing to run XSS against a real target"
+            )
         try:
             from playwright.sync_api import sync_playwright
         except ImportError as exc:

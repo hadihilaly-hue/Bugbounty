@@ -38,7 +38,7 @@ import time
 from typing import Any, Protocol
 
 from ...config import Config
-from ...scope import Target
+from ...scope import Platform, Target
 from ..base import HarnessUnavailable, ProofHarness
 from ..models import Candidate, Evidence, ValidationResult, ValidationStatus, VulnClass
 
@@ -344,6 +344,7 @@ class HttpPocHarness(ProofHarness):
     def run(self, candidate: Candidate, target: Target, config: Config) -> ValidationResult:
         try:
             from ...net import build_client
+            from ...net.pacing import PacingConfig
         except ImportError as exc:  # pragma: no cover
             raise HarnessUnavailable("httpx not installed (pip install .[dynamic])") from exc
 
@@ -351,6 +352,12 @@ class HttpPocHarness(ProofHarness):
         oracle = candidate.params.get("oracle")
         if not requests or not oracle:
             raise HarnessUnavailable("candidate missing 'requests' and/or 'oracle' params")
+        missing = target.unfilled_required_headers()
+        if missing and target.platform is not Platform.SELF:
+            raise HarnessUnavailable(
+                f"required header(s) {missing} unfilled/placeholder; refusing to send "
+                f"requests to {target.name!r} (fill required_headers before any pass)"
+            )
 
         ctx: dict[str, str] = {}
         oob_token: str | None = None
@@ -376,20 +383,36 @@ class HttpPocHarness(ProofHarness):
                 candidate.params.get("account"),
                 base_url=origin_base(requests[0]["url"]),
                 transport=self._transport,
+                headers=(target.required_headers or None),
+                per_host_rps=(target.rate_limit.per_host_rps if target.rate_limit else None),
             )
 
         steps: list[dict] = []
         evidence: list[Evidence] = []
+        pacing = PacingConfig.from_config(
+            config, per_host_rps=(target.rate_limit.per_host_rps if target.rate_limit else None)
+        )
         # Route through the paced client so every proof request to the target is
-        # per-host rate limited and 429-aware (shared timeline with recon/session).
+        # per-host rate limited and 429-aware (shared timeline with recon/session),
+        # and carries the target's required_headers (e.g. HackerOne attribution).
         with build_client(
-            config, inner=self._transport, timeout=15.0, follow_redirects=True
+            config,
+            inner=self._transport,
+            pacing=pacing,
+            headers=(target.required_headers or None),
+            timeout=15.0,
+            follow_redirects=True,
         ) as client:
             for i, raw in enumerate(requests):
                 req = _substitute(raw, ctx)
                 method = req.get("method", "GET").upper()
                 sess_headers = session.headers_for(req["url"]) if session else {}
-                merged_headers = {**sess_headers, **(req.get("headers") or {})}
+                # required_headers win last so a candidate step can't erase attribution.
+                merged_headers = {
+                    **sess_headers,
+                    **(req.get("headers") or {}),
+                    **(target.required_headers or {}),
+                }
                 _t0 = time.perf_counter()
                 resp = client.request(
                     method,
@@ -443,7 +466,18 @@ class HttpPocHarness(ProofHarness):
                 )
 
         proved = evaluate_oracle(oracle, steps, oob=self._oob)
-        poc = _poc_script(requests, oob_token)
+        # Render the PoC with required_headers merged in (winning), so the emitted
+        # command reproduces the request the harness actually sent -- not the
+        # candidate's conflicting value.
+        poc_requests = (
+            [
+                {**r, "headers": {**(r.get("headers") or {}), **target.required_headers}}
+                for r in requests
+            ]
+            if target.required_headers
+            else requests
+        )
+        poc = _poc_script(poc_requests, oob_token)
         if proved:
             return ValidationResult(
                 candidate_id=candidate.id,

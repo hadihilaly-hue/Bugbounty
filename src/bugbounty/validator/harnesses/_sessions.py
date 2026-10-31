@@ -48,6 +48,8 @@ def build_account_session(
     base_url: str = "",
     client: httpx.Client | None = None,
     transport: Any | None = None,
+    headers: dict[str, str] | None = None,
+    per_host_rps: float | None = None,
 ) -> SessionManager:
     """Authenticate one account and return its pinned :class:`SessionManager`.
 
@@ -74,7 +76,14 @@ def build_account_session(
     if client is None and transport is not None:
         client = httpx.Client(transport=transport, base_url=base_url, follow_redirects=False)
 
-    sm = SessionManager.from_auth(target.auth, config=config, base_url=base_url, client=client)
+    sm = SessionManager.from_auth(
+        target.auth,
+        config=config,
+        base_url=base_url,
+        client=client,
+        headers=headers,
+        per_host_rps=per_host_rps,
+    )
     try:
         sm.authenticate(account)
     except MfaRequired as exc:

@@ -29,8 +29,9 @@ import yaml
 
 from ...config import Config
 from ...net import SessionManager, build_client
+from ...net.pacing import PacingConfig
 from ...net.session import Account, _cookie_list_to_dict
-from ...scope import Target
+from ...scope import Platform, Target
 from ..base import HarnessUnavailable, ProofHarness
 from ..models import Candidate, Evidence, ValidationResult, ValidationStatus, VulnClass
 from ._sessions import origin_base
@@ -162,13 +163,28 @@ class IdorHarness(ProofHarness):
         marker = candidate.params.get("victim_marker")
         if not (victim_url and marker):
             raise HarnessUnavailable("candidate needs victim_url and victim_marker params")
+        missing = target.unfilled_required_headers()
+        if missing and target.platform is not Platform.SELF:
+            raise HarnessUnavailable(
+                f"required header(s) {missing} unfilled/placeholder; refusing to send "
+                f"requests to {target.name!r} (fill required_headers before any pass)"
+            )
         a_raw, b_raw = accounts["account_a"], accounts["account_b"]
 
         evidence: list[Evidence] = []
+        pacing = PacingConfig.from_config(
+            config, per_host_rps=(target.rate_limit.per_host_rps if target.rate_limit else None)
+        )
         # Route through the paced client so every proof request to the target is
-        # per-host rate limited and 429-aware (shared timeline with recon/session).
+        # per-host rate limited and 429-aware (shared timeline with recon/session),
+        # and carries the target's required_headers (e.g. HackerOne attribution).
         with build_client(
-            config, inner=self._transport, timeout=15.0, follow_redirects=True
+            config,
+            inner=self._transport,
+            pacing=pacing,
+            headers=(target.required_headers or None),
+            timeout=15.0,
+            follow_redirects=True,
         ) as client:
             headers_a, key_a = self._auth_for(a_raw, login, victim_url, config, client)
             headers_b, key_b = self._auth_for(b_raw, login, victim_url, config, client)
@@ -179,7 +195,8 @@ class IdorHarness(ProofHarness):
                 )
 
             def _get(label: str, headers: dict[str, str]) -> Any:
-                r = client.get(victim_url, headers=headers)
+                # required_headers win so per-request auth headers can't erase attribution.
+                r = client.get(victim_url, headers={**headers, **(target.required_headers or {})})
                 evidence.append(
                     Evidence(
                         kind="http",
